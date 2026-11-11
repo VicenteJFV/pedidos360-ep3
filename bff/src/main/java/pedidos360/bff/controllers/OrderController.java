@@ -1,5 +1,7 @@
 package pedidos360.bff.controllers;
 
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
@@ -64,7 +66,7 @@ public class OrderController {
         }
 
         try {
-            return restTemplate.postForEntity(ordersBaseUrl + "/api/orders", payload, String.class);
+            return restTemplate.postForEntity(ordersBaseUrl + "/api/orders", new HttpEntity<>(payload, conUsuario(jwt)), String.class);
         } catch (HttpStatusCodeException e) {
             return ResponseEntity.status(e.getStatusCode())
                     .contentType(MediaType.APPLICATION_JSON)
@@ -74,9 +76,9 @@ public class OrderController {
 
     @PreAuthorize("hasAuthority('ROLE_Admin')")
     @PutMapping("/{id}/accept")
-    public ResponseEntity<?> accept(@PathVariable String id) {
+    public ResponseEntity<?> accept(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
         try {
-            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/accept", org.springframework.http.HttpMethod.PUT, null, String.class);
+            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/accept", org.springframework.http.HttpMethod.PUT, new HttpEntity<>(conUsuario(jwt)), String.class);
         } catch (org.springframework.web.client.HttpStatusCodeException e) {
             return ResponseEntity.status(e.getStatusCode()).contentType(MediaType.APPLICATION_JSON).body(e.getResponseBodyAsString());
         }
@@ -84,9 +86,9 @@ public class OrderController {
 
     @PreAuthorize("hasAuthority('ROLE_Admin')")
     @PutMapping("/{id}/ship")
-    public ResponseEntity<?> ship(@PathVariable String id) {
+    public ResponseEntity<?> ship(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
         try {
-            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/ship", org.springframework.http.HttpMethod.PUT, null, String.class);
+            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/ship", org.springframework.http.HttpMethod.PUT, new HttpEntity<>(conUsuario(jwt)), String.class);
         } catch (org.springframework.web.client.HttpStatusCodeException e) {
             return ResponseEntity.status(e.getStatusCode()).contentType(MediaType.APPLICATION_JSON).body(e.getResponseBodyAsString());
         }
@@ -94,9 +96,9 @@ public class OrderController {
 
     @PreAuthorize("hasAuthority('ROLE_Admin')")
     @PutMapping("/{id}/prepare")
-    public ResponseEntity<?> prepare(@PathVariable String id) {
+    public ResponseEntity<?> prepare(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
         try {
-            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/prepare", org.springframework.http.HttpMethod.PUT, null, String.class);
+            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/prepare", org.springframework.http.HttpMethod.PUT, new HttpEntity<>(conUsuario(jwt)), String.class);
         } catch (org.springframework.web.client.HttpStatusCodeException e) {
             return ResponseEntity.status(e.getStatusCode()).contentType(MediaType.APPLICATION_JSON).body(e.getResponseBodyAsString());
         }
@@ -104,11 +106,25 @@ public class OrderController {
 
     @PreAuthorize("hasAuthority('ROLE_Admin')")
     @PutMapping("/{id}/deliver")
-    public ResponseEntity<?> deliver(@PathVariable String id) {
+    public ResponseEntity<?> deliver(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
         try {
-            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/deliver", org.springframework.http.HttpMethod.PUT, null, String.class);
+            return restTemplate.exchange(ordersBaseUrl + "/api/orders/" + id + "/deliver", org.springframework.http.HttpMethod.PUT, new HttpEntity<>(conUsuario(jwt)), String.class);
         } catch (org.springframework.web.client.HttpStatusCodeException e) {
             return ResponseEntity.status(e.getStatusCode()).contentType(MediaType.APPLICATION_JSON).body(e.getResponseBodyAsString());
         }
+    }
+
+    /**
+     * EP3: orders registra quien hizo cada accion en el topico pedidos-auditoria.
+     * Se le pasa solo el nombre de usuario del token, nunca el token: orders no
+     * valida JWT y no tiene por que verlo ni registrarlo.
+     */
+    private HttpHeaders conUsuario(Jwt jwt) {
+        HttpHeaders cabeceras = new HttpHeaders();
+        String usuario = jwt == null ? null : jwt.getClaimAsString("preferred_username");
+        if (usuario != null) {
+            cabeceras.set("X-Usuario", usuario);
+        }
+        return cabeceras;
     }
 }

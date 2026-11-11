@@ -15,6 +15,7 @@ import cl.duoc.pedidos360.orders.web.dto.LineaPedidoRequest;
 import cl.duoc.pedidos360.orders.web.dto.PedidoResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -36,12 +37,17 @@ public class PedidoService {
     private final PedidoRepository repositorio;
     private final CatalogClient catalogo;
     private final PublicadorComandos publicador;
+    private final ApplicationEventPublisher eventos;
+    private final UsuarioSolicitante usuario;
 
     public PedidoService(PedidoRepository repositorio, CatalogClient catalogo,
-                         PublicadorComandos publicador) {
+                         PublicadorComandos publicador, ApplicationEventPublisher eventos,
+                         UsuarioSolicitante usuario) {
         this.repositorio = repositorio;
         this.catalogo = catalogo;
         this.publicador = publicador;
+        this.eventos = eventos;
+        this.usuario = usuario;
     }
 
     @Transactional(readOnly = true)
@@ -107,6 +113,7 @@ public class PedidoService {
         Pedido guardado = repositorio.save(pedido);
         log.info("Pedido creado. codigo={} cliente={} total={}",
                 guardado.getCodigo(), guardado.getClienteEmail(), guardado.getTotal());
+        registrarCambio("CREAR", guardado, null, null);
         return PedidoResponse.desde(guardado);
     }
 
@@ -125,6 +132,7 @@ public class PedidoService {
     @Transactional
     public PedidoResponse aceptar(Long id) {
         Pedido pedido = buscarConItems(id);
+        EstadoPedido origen = pedido.getEstado();
         pedido.cambiarEstado(EstadoPedido.ACEPTADO);
         repositorio.saveAndFlush(pedido);
 
@@ -142,6 +150,7 @@ public class PedidoService {
         // del pedido- para poder seguirlos juntos en los logs del consumidor.
         publicador.publicarEmail(pedido);
         publicador.publicarKitchen(pedido);
+        registrarCambio("ACEPTAR", pedido, origen, null);
 
         return PedidoResponse.desde(pedido);
     }
@@ -152,7 +161,7 @@ public class PedidoService {
      */
     @Transactional
     public PedidoResponse preparar(Long id) {
-        return PedidoResponse.desde(avanzar(id, EstadoPedido.EN_PREPARACION));
+        return PedidoResponse.desde(avanzar(id, EstadoPedido.EN_PREPARACION, "PREPARAR"));
     }
 
     /**
@@ -163,7 +172,7 @@ public class PedidoService {
      */
     @Transactional
     public PedidoResponse despachar(Long id) {
-        Pedido pedido = avanzar(id, EstadoPedido.DESPACHADO);
+        Pedido pedido = avanzar(id, EstadoPedido.DESPACHADO, "DESPACHAR");
         publicador.publicarEmail(pedido);
         return PedidoResponse.desde(pedido);
     }
@@ -174,7 +183,7 @@ public class PedidoService {
      */
     @Transactional
     public PedidoResponse entregar(Long id) {
-        Pedido pedido = avanzar(id, EstadoPedido.ENTREGADO);
+        Pedido pedido = avanzar(id, EstadoPedido.ENTREGADO, "ENTREGAR");
         publicador.publicarInvoice(pedido);
         return PedidoResponse.desde(pedido);
     }
@@ -187,6 +196,7 @@ public class PedidoService {
     public PedidoResponse cancelar(Long id, String motivo) {
         Pedido pedido = buscarConItems(id);
         boolean debeReponerStock = pedido.tieneStockReservado();
+        EstadoPedido origen = pedido.getEstado();
 
         pedido.cambiarEstado(EstadoPedido.CANCELADO);
         if (StringUtils.hasText(motivo)) {
@@ -199,6 +209,7 @@ public class PedidoService {
         }
 
         log.info("Pedido cancelado. codigo={} reponeStock={}", pedido.getCodigo(), debeReponerStock);
+        registrarCambio("CANCELAR", pedido, origen, motivo);
         return PedidoResponse.desde(pedido);
     }
 
@@ -206,13 +217,24 @@ public class PedidoService {
      * Devuelve la entidad y no el DTO porque quien llama necesita el Pedido para
      * construir el mensaje: el productor arma el cuerpo desde el dominio.
      */
-    private Pedido avanzar(Long id, EstadoPedido destino) {
+    private Pedido avanzar(Long id, EstadoPedido destino, String accion) {
         Pedido pedido = buscarConItems(id);
         EstadoPedido origen = pedido.getEstado();
         pedido.cambiarEstado(destino);
         Pedido guardado = repositorio.save(pedido);
         log.info("Pedido {} cambio de {} a {}", guardado.getCodigo(), origen, destino);
+        registrarCambio(accion, guardado, origen, null);
         return guardado;
+    }
+
+    /**
+     * EP3: avisa que el pedido cambio. No publica en Kafka directamente: emite un
+     * evento de Spring que PublicadorEventosKafka recibe recien cuando la
+     * transaccion se confirma. Si despues de esta linea algo falla y la
+     * transaccion se revierte, el aviso se descarta y Kafka no registra nada.
+     */
+    private void registrarCambio(String accion, Pedido pedido, EstadoPedido origen, String motivo) {
+        eventos.publishEvent(CambioEstadoPedido.de(accion, pedido, origen, usuario.actual(), motivo));
     }
 
     private Pedido buscarConItems(Long id) {

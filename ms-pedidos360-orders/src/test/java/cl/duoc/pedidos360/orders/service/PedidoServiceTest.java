@@ -17,6 +17,8 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -24,6 +26,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.clearInvocations;
@@ -36,6 +39,7 @@ import static org.mockito.Mockito.when;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @Transactional
+@RecordApplicationEvents
 class PedidoServiceTest {
 
     private static final Long ID_DISPONIBLE = 1L;
@@ -58,6 +62,10 @@ class PedidoServiceTest {
      */
     @MockBean
     private PublicadorComandos publicador;
+
+    /** Avisos internos que emite el servicio; de ellos salen los eventos Kafka (EP3). */
+    @Autowired
+    private ApplicationEvents avisos;
 
     @BeforeEach
     void simularCatalogo() {
@@ -400,5 +408,97 @@ class PedidoServiceTest {
         servicio.cancelar(pedido.id(), "El cliente se arrepintio");
 
         verifyNoInteractions(publicador);
+    }
+
+    // -----------------------------------------------------------------------
+    // Eventos para Kafka (EP3)
+    // -----------------------------------------------------------------------
+    // Aqui se prueba QUE avisa el servicio. Que esos avisos lleguen a Kafka solo
+    // despues del commit se prueba en PublicadorEventosKafkaTest: estas pruebas
+    // son @Transactional y se revierten, asi que nunca llegan al commit.
+
+    private List<CambioEstadoPedido> cambios() {
+        return avisos.stream(CambioEstadoPedido.class).toList();
+    }
+
+    @Test
+    @DisplayName("Crear un pedido avisa CREAR, sin estado anterior")
+    void crearAvisa() {
+        PedidoResponse pedido = crearPedidoSimple(2);
+
+        assertThat(cambios()).singleElement().satisfies(cambio -> {
+            assertThat(cambio.accion()).isEqualTo("CREAR");
+            assertThat(cambio.codigo()).isEqualTo(pedido.codigo());
+            assertThat(cambio.estadoAnterior()).isNull();
+            assertThat(cambio.estadoNuevo()).isEqualTo(EstadoPedido.CREADO);
+            assertThat(cambio.total()).isEqualByComparingTo("1000000.00");
+            assertThat(cambio.cantidadItems()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    @DisplayName("Sin solicitud HTTP, la accion se atribuye a 'sistema'")
+    void sinSolicitudElUsuarioEsSistema() {
+        crearPedidoSimple(1);
+
+        assertThat(cambios()).singleElement()
+                .extracting(CambioEstadoPedido::usuario).isEqualTo("sistema");
+    }
+
+    @Test
+    @DisplayName("El flujo completo avisa cada transicion, en orden y con su estado anterior")
+    void flujoCompletoAvisaCadaTransicion() {
+        Long id = crearPedidoSimple(1).id();
+        servicio.aceptar(id);
+        servicio.preparar(id);
+        servicio.despachar(id);
+        servicio.entregar(id);
+
+        assertThat(cambios())
+                .extracting(CambioEstadoPedido::accion, CambioEstadoPedido::estadoAnterior,
+                        CambioEstadoPedido::estadoNuevo)
+                .containsExactly(
+                        tuple("CREAR", null, EstadoPedido.CREADO),
+                        tuple("ACEPTAR", EstadoPedido.CREADO, EstadoPedido.ACEPTADO),
+                        tuple("PREPARAR", EstadoPedido.ACEPTADO, EstadoPedido.EN_PREPARACION),
+                        tuple("DESPACHAR", EstadoPedido.EN_PREPARACION, EstadoPedido.DESPACHADO),
+                        tuple("ENTREGAR", EstadoPedido.DESPACHADO, EstadoPedido.ENTREGADO));
+    }
+
+    @Test
+    @DisplayName("Cancelar avisa CANCELAR con el motivo")
+    void cancelarAvisaConMotivo() {
+        Long id = crearPedidoSimple(1).id();
+
+        servicio.cancelar(id, "El cliente se arrepintio");
+
+        assertThat(cambios()).last().satisfies(cambio -> {
+            assertThat(cambio.accion()).isEqualTo("CANCELAR");
+            assertThat(cambio.estadoAnterior()).isEqualTo(EstadoPedido.CREADO);
+            assertThat(cambio.estadoNuevo()).isEqualTo(EstadoPedido.CANCELADO);
+            assertThat(cambio.motivo()).isEqualTo("El cliente se arrepintio");
+        });
+    }
+
+    @Test
+    @DisplayName("Si el catalogo rechaza la reserva, no se avisa ACEPTAR")
+    void reservaRechazadaNoAvisa() {
+        Long id = crearPedidoSimple(2).id();
+        doThrow(new ReglaNegocioException("Stock insuficiente"))
+                .when(catalogo).reservarStock(anyString(), any());
+
+        assertThatThrownBy(() -> servicio.aceptar(id)).isInstanceOf(ReglaNegocioException.class);
+
+        assertThat(cambios()).extracting(CambioEstadoPedido::accion).containsExactly("CREAR");
+    }
+
+    @Test
+    @DisplayName("Una transicion invalida no avisa nada")
+    void transicionInvalidaNoAvisa() {
+        Long id = crearPedidoSimple(1).id();
+
+        assertThatThrownBy(() -> servicio.despachar(id)).isInstanceOf(TransicionInvalidaException.class);
+
+        assertThat(cambios()).extracting(CambioEstadoPedido::accion).containsExactly("CREAR");
     }
 }
