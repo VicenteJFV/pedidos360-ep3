@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- Spring Boot 4.1.1, la version de la guia practica 3.3.2 (y del BFF). -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.1</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>cl.duoc.pedidos360</groupId>
+  <artifactId>ms-pedidos360-reportes</artifactId>
+  <version>1.0.0</version>
+  <name>ms-pedidos360-reportes</name>
+  <description>Consumidor Kafka de Pedidos360: reporteria y auditoria - EP3 DSY1107</description>
+
+  <properties>
+    <!-- 17 como el resto de los microservicios: las imagenes Docker del
+         proyecto corren sobre eclipse-temurin:17-jre. -->
+    <java.version>17</java.version>
+    <!-- La version de la guia 3.3.2 para ojdbc11, oraclepki, osdt_core y
+         osdt_cert. La que trae Spring Boot 4.1.1 (23.26) no publica osdt_core
+         ni osdt_cert, y sin ellos el driver no abre el wallet. -->
+    <oracle-database.version>21.23.0.0</oracle-database.version>
+  </properties>
+
+  <dependencies>
+    <!-- Las tres dependencias que la guia 3.3.2 pide en Initializr: Spring for
+         Apache Kafka, Spring Web y Validation. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-kafka</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- JdbcTemplate para el registro idempotente, como en la fase final de la
+         guia 3.3.2. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Perfil dev: base en memoria, sin dependencias externas. -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Perfil oracle: la misma Autonomous Database del proyecto, con wallet.
+         Son los cuatro artefactos de la guia 3.3.2; sin osdt_core y osdt_cert
+         el driver no puede abrir cwallet.sso. -->
+    <dependency>
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ojdbc11</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.oracle.database.security</groupId>
+      <artifactId>oraclepki</artifactId>
+      <version>${oracle-database.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.oracle.database.security</groupId>
+      <artifactId>osdt_core</artifactId>
+      <version>${oracle-database.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.oracle.database.security</groupId>
+      <artifactId>osdt_cert</artifactId>
+      <version>${oracle-database.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>ms-pedidos360-reportes</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+      <!-- En Windows, Java abre sus canales internos como sockets en la carpeta
+           temporal del usuario. Si la ruta tiene una tilde (por ejemplo en el
+           nombre de usuario de Windows), falla con "Unable to establish loopback
+           connection" y el Kafka embebido de las pruebas no arranca. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>-Djdk.net.unixdomain.tmpdir=${project.build.directory}</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
