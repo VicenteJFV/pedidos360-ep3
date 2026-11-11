@@ -2,19 +2,12 @@ package pedidos360.bff.controllers;
 
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
-
-import java.net.URI;
 
 /**
  * Reenvia la API del microservicio administrador de RabbitMQ (EP2).
@@ -49,33 +42,6 @@ public class RabbitAdminController {
     @RequestMapping({"", "/**"})
     public ResponseEntity<String> reenviar(HttpServletRequest peticion,
                                            @RequestBody(required = false) String cuerpo) {
-
-        String ruta = peticion.getRequestURI().substring(peticion.getContextPath().length());
-        String consulta = peticion.getQueryString();
-
-        // URI ya codificada, tal como llego. Si se pasara como String, RestTemplate
-        // la volveria a codificar y un queueName=%20 llegaria como %2520.
-        URI destino = URI.create(rabbitAdminBaseUrl + ruta + (consulta != null ? "?" + consulta : ""));
-
-        HttpHeaders cabeceras = new HttpHeaders();
-        if (cuerpo != null) {
-            cabeceras.setContentType(MediaType.APPLICATION_JSON);
-        }
-
-        try {
-            ResponseEntity<String> respuesta = restTemplate.exchange(destino,
-                    HttpMethod.valueOf(peticion.getMethod()),
-                    new HttpEntity<>(cuerpo, cabeceras), String.class);
-            return ResponseEntity.status(respuesta.getStatusCode())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(respuesta.getBody());
-        } catch (HttpStatusCodeException e) {
-            // Solo el estado y el cuerpo. No se copian las cabeceras de la respuesta
-            // de rabbitadmin: Transfer-Encoding y Connection son hop-by-hop, y
-            // reenviarlas rompia la respuesta en EP1 (500 con cuerpo vacio).
-            return ResponseEntity.status(e.getStatusCode())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(e.getResponseBodyAsString());
-        }
+        return Reenvio.reenviar(restTemplate, rabbitAdminBaseUrl, peticion, cuerpo);
     }
 }
