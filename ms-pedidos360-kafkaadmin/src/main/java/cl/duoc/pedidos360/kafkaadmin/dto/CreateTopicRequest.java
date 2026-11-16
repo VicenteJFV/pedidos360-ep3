@@ -17,12 +17,14 @@ import java.util.Map;
  * de hasta 3, que son los brokers del cluster.
  */
 public record CreateTopicRequest(
-        @NotBlank
-        @Pattern(regexp = "^(?!__)[a-zA-Z0-9._-]{1,249}$",
+        // El vacio lo informa @NotBlank ("es obligatorio"); el patron solo revisa
+        // los nombres que si traen algo.
+        @NotBlank(message = "es obligatorio")
+        @Pattern(regexp = "^$|^(?!__)[a-zA-Z0-9._-]{1,249}$",
                 message = "solo admite letras, numeros, punto, guion y guion bajo, y no puede empezar con __")
         String name,
-        @NotNull @Min(1) @Max(50) Integer partitions,
-        @NotNull @Min(1) @Max(value = 3, message = "no puede superar los 3 brokers del cluster") Short replicationFactor,
+        @NotNull(message = "es obligatorio") @Min(1) @Max(50) Integer partitions,
+        @NotNull(message = "es obligatorio") @Min(1) @Max(value = 3, message = "no puede superar los 3 brokers del cluster") Short replicationFactor,
         Map<String, String> configs
 ) {
 }

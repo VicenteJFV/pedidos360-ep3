@@ -7,7 +7,7 @@ import jakarta.validation.constraints.NotBlank;
  * una propiedad y su valor nuevo, por ejemplo retention.ms = 172800000.
  */
 public record TopicConfigRequest(
-        @NotBlank String configName,
-        @NotBlank String value
+        @NotBlank(message = "es obligatorio") String configName,
+        @NotBlank(message = "es obligatorio") String value
 ) {
 }

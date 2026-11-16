@@ -103,7 +103,7 @@ public class KafkaErrorConfig {
         if (causa instanceof EventoInvalidoException) {
             return; // ya lo registro el consumidor como EVENTO INVALIDO
         }
-        if (error instanceof DeserializationException || causa instanceof DeserializationException) {
+        if (esIlegible(error)) {
             log.error("MENSAJE ILEGIBLE | Topico: {} | Particion: {} | Offset: {} | Key: {} | no es un JSON valido | no se reintenta",
                     registro.topic(), registro.partition(), registro.offset(), registro.key());
             return;
@@ -111,6 +111,20 @@ public class KafkaErrorConfig {
         log.warn("ERROR DE PROCESAMIENTO | Topico: {} | Particion: {} | Offset: {} | Key: {} | intento {} de {} | motivo: {}",
                 registro.topic(), registro.partition(), registro.offset(), registro.key(),
                 intento, intentos, causa.getMessage());
+    }
+
+    /**
+     * La DeserializationException llega envuelta (ListenerExecutionFailedException
+     * y otras), y su causa mas profunda es el error de Jackson: hay que recorrer
+     * la cadena completa para reconocerla.
+     */
+    private static boolean esIlegible(Throwable error) {
+        for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof DeserializationException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String motivo(Exception error) {

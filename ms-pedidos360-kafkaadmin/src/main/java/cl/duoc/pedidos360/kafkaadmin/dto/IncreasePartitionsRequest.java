@@ -9,6 +9,6 @@ import jakarta.validation.constraints.NotNull;
  * totalPartitions es el total final, no cuantas se agregan.
  */
 public record IncreasePartitionsRequest(
-        @NotNull @Min(1) @Max(50) Integer totalPartitions
+        @NotNull(message = "es obligatorio") @Min(1) @Max(50) Integer totalPartitions
 ) {
 }
