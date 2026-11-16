@@ -23,7 +23,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -99,13 +99,13 @@ class KafkaYReportesControllerTest {
     @Test
     @DisplayName("Admin modifica una configuracion: el cuerpo JSON llega intacto")
     void adminModificaConfiguracion() throws Exception {
-        String cuerpo = "{\"retention.ms\":\"300000\"}";
-        servidorKafkaAdmin.expect(requestTo(KAFKAADMIN + "/api/kafka/topics/pedidos-prueba/config"))
-                .andExpect(method(HttpMethod.PUT))
+        String cuerpo = "{\"configName\":\"retention.ms\",\"value\":\"172800000\"}";
+        servidorKafkaAdmin.expect(requestTo(KAFKAADMIN + "/api/kafka/topics/ev3-admin-prueba/configs"))
+                .andExpect(method(HttpMethod.PATCH))
                 .andExpect(content().json(cuerpo))
-                .andRespond(withSuccess("{\"topico\":\"pedidos-prueba\"}", MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess("{\"topic\":\"ev3-admin-prueba\"}", MediaType.APPLICATION_JSON));
 
-        mockMvc.perform(put("/api/kafka/topics/pedidos-prueba/config")
+        mockMvc.perform(patch("/api/kafka/topics/ev3-admin-prueba/configs")
                         .contentType(MediaType.APPLICATION_JSON).content(cuerpo)
                         .with(jwt().authorities(rol("Admin"))))
                 .andExpect(status().isOk());

@@ -1,37 +1,48 @@
 # Cluster Kafka para EP3 - Pedidos360
 #
-# Arquitectura de la seccion 3 de la guia de EP3: tres nodos ZooKeeper, tres
-# brokers y Kafka UI. Las imagenes son las de las guias practicas 3.1 a 3.3
-# (confluentinc 7.5.0); la diferencia es que alla habia un solo broker y aca
-# hay tres, porque los dos topicos del caso exigen factor de replicacion 3.
+# Es el docker-compose.yml de la guia practica 3.4 (Confluent Platform 7.6.1,
+# tres nodos ZooKeeper, tres brokers, limites de memoria, volumenes con nombre y
+# Kafka UI), con tres cambios para el caso:
+#
+#  1. kafka-init: crea los topicos de Pedidos360 al arrancar (seccion 4 de la
+#     guia de EP3), con la retencion y la limpieza de cada flujo.
+#  2. Kafka UI en el puerto 8090 y no en 8080: en este proyecto el 8080 es el
+#     BFF desde EP1, y el 8082 que sugiere la guia como alternativa es el
+#     catalogo.
+#  3. Imagen de Kafka UI fija en v0.7.2, que es la version a la que apunta
+#     latest: asi el entorno no cambia solo entre un ensayo y la presentacion.
 #
 #   zookeeper-1  2181         kafka-1  localhost:29092 (host)  kafka-1:9092 (red Docker)
 #   zookeeper-2  2182         kafka-2  localhost:39092 (host)  kafka-2:9092 (red Docker)
 #   zookeeper-3  2183         kafka-3  localhost:49092 (host)  kafka-3:9092 (red Docker)
 #   kafka-ui     http://localhost:8090
 #
-# Kafka UI se publica en 8090 y no en 8080 como en la tabla de la guia: en este
-# proyecto el 8080 es el BFF desde EP1. Las propias guias practicas ya lo movian
-# (8081:8080) por la misma razon, solo que el 8081 aqui es ms-pedidos360-orders.
-#
-# Cada broker tiene dos listeners, como el kafka-broker de las guias:
+# Cada broker tiene dos listeners, como en la guia:
 #   INTERNAL  kafka-N:9092     lo usan los otros brokers, Kafka UI y los
 #                              microservicios que corren dentro de Docker.
 #   EXTERNAL  localhost:N9092  lo usan los microservicios que corren en el
 #                              equipo anfitrion (mvn spring-boot:run).
 #
 # Los tres brokers corren en el mismo equipo: el cluster tolera la caida de un
-# broker, pero no la del equipo completo (seccion 3.2 de la guia).
+# broker, pero no la del equipo completo (seccion 3.2 de la guia de EP3).
 
 x-zookeeper: &zookeeper
-  image: confluentinc/cp-zookeeper:7.5.0
+  image: confluentinc/cp-zookeeper:7.6.1
   restart: unless-stopped
-  networks: [kafka-net]
+  networks: [kafka-network]
+
+x-zookeeper-env: &zookeeper-env
+  ZOOKEEPER_CLIENT_PORT: 2181
+  ZOOKEEPER_TICK_TIME: 2000
+  ZOOKEEPER_INIT_LIMIT: 5
+  ZOOKEEPER_SYNC_LIMIT: 2
+  ZOOKEEPER_SERVERS: "zookeeper-1:2888:3888;zookeeper-2:2888:3888;zookeeper-3:2888:3888"
+  KAFKA_HEAP_OPTS: "-Xms64M -Xmx128M"
 
 x-kafka: &kafka
-  image: confluentinc/cp-kafka:7.5.0
+  image: confluentinc/cp-kafka:7.6.1
   restart: unless-stopped
-  networks: [kafka-net]
+  networks: [kafka-network]
   depends_on: [zookeeper-1, zookeeper-2, zookeeper-3]
   healthcheck:
     test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
@@ -41,24 +52,22 @@ x-kafka: &kafka
     start_period: 20s
 
 x-kafka-env: &kafka-env
-  KAFKA_ZOOKEEPER_CONNECT: zookeeper-1:2181,zookeeper-2:2182,zookeeper-3:2183
-  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+  KAFKA_ZOOKEEPER_CONNECT: "zookeeper-1:2181,zookeeper-2:2181,zookeeper-3:2181"
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
   KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-  # Como en las guias: un topico solo existe si alguien lo crea a proposito.
-  # Asi un nombre mal escrito en un productor falla en vez de crear un topico
-  # nuevo con valores por defecto.
-  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-  # Con tres brokers, los topicos internos tambien se replican tres veces. En
-  # las guias valian 1 porque habia un solo broker.
+  # Con tres brokers, los topicos internos tambien se replican tres veces.
   KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
   # Un registro se confirma (acks=all) cuando lo tienen al menos 2 de las 3
   # replicas. Asi se puede caer un broker sin dejar de aceptar escrituras.
   KAFKA_MIN_INSYNC_REPLICAS: 2
-  # La imagen reserva 1 GB por broker si no se le dice otra cosa.
-  KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+  # Como en las guias 3.1 a 3.3: un topico solo existe si alguien lo crea a
+  # proposito. Un nombre mal escrito en un productor falla en vez de crear un
+  # topico nuevo con valores por defecto.
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_HEAP_OPTS: "-Xms256M -Xmx256M"
 
 services:
   zookeeper-1:
@@ -67,41 +76,35 @@ services:
     hostname: zookeeper-1
     ports: ["2181:2181"]
     environment:
+      <<: *zookeeper-env
       ZOOKEEPER_SERVER_ID: 1
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-      ZOOKEEPER_INIT_LIMIT: 5
-      ZOOKEEPER_SYNC_LIMIT: 2
-      ZOOKEEPER_SERVERS: zookeeper-1:2888:3888;zookeeper-2:2888:3888;zookeeper-3:2888:3888
-      KAFKA_HEAP_OPTS: "-Xmx128m -Xms128m"
+    volumes:
+      - zk1-data:/var/lib/zookeeper/data
+      - zk1-log:/var/lib/zookeeper/log
 
   zookeeper-2:
     <<: *zookeeper
     container_name: zookeeper-2
     hostname: zookeeper-2
-    ports: ["2182:2182"]
+    ports: ["2182:2181"]
     environment:
+      <<: *zookeeper-env
       ZOOKEEPER_SERVER_ID: 2
-      ZOOKEEPER_CLIENT_PORT: 2182
-      ZOOKEEPER_TICK_TIME: 2000
-      ZOOKEEPER_INIT_LIMIT: 5
-      ZOOKEEPER_SYNC_LIMIT: 2
-      ZOOKEEPER_SERVERS: zookeeper-1:2888:3888;zookeeper-2:2888:3888;zookeeper-3:2888:3888
-      KAFKA_HEAP_OPTS: "-Xmx128m -Xms128m"
+    volumes:
+      - zk2-data:/var/lib/zookeeper/data
+      - zk2-log:/var/lib/zookeeper/log
 
   zookeeper-3:
     <<: *zookeeper
     container_name: zookeeper-3
     hostname: zookeeper-3
-    ports: ["2183:2183"]
+    ports: ["2183:2181"]
     environment:
+      <<: *zookeeper-env
       ZOOKEEPER_SERVER_ID: 3
-      ZOOKEEPER_CLIENT_PORT: 2183
-      ZOOKEEPER_TICK_TIME: 2000
-      ZOOKEEPER_INIT_LIMIT: 5
-      ZOOKEEPER_SYNC_LIMIT: 2
-      ZOOKEEPER_SERVERS: zookeeper-1:2888:3888;zookeeper-2:2888:3888;zookeeper-3:2888:3888
-      KAFKA_HEAP_OPTS: "-Xmx128m -Xms128m"
+    volumes:
+      - zk3-data:/var/lib/zookeeper/data
+      - zk3-log:/var/lib/zookeeper/log
 
   kafka-1:
     <<: *kafka
@@ -111,8 +114,10 @@ services:
     environment:
       <<: *kafka-env
       KAFKA_BROKER_ID: 1
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka-1:9092,EXTERNAL://localhost:29092"
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
 
   kafka-2:
     <<: *kafka
@@ -122,8 +127,10 @@ services:
     environment:
       <<: *kafka-env
       KAFKA_BROKER_ID: 2
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:39092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://localhost:39092
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:39092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka-2:9092,EXTERNAL://localhost:39092"
+    volumes:
+      - kafka2-data:/var/lib/kafka/data
 
   kafka-3:
     <<: *kafka
@@ -133,16 +140,18 @@ services:
     environment:
       <<: *kafka-env
       KAFKA_BROKER_ID: 3
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:49092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:49092
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:49092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka-3:9092,EXTERNAL://localhost:49092"
+    volumes:
+      - kafka3-data:/var/lib/kafka/data
 
-  # Crea los topicos del caso con kafka-topics, el mismo comando de las guias
-  # practicas, y termina. --if-not-exists lo hace idempotente: en cada arranque
-  # confirma que existen sin tocar los que ya estan.
+  # Crea los topicos del caso con kafka-topics, el mismo comando de la Etapa 5
+  # de la guia 3.4, y termina. --if-not-exists lo hace idempotente: en cada
+  # arranque confirma que existen sin tocar los que ya estan.
   kafka-init:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.6.1
     container_name: kafka-init
-    networks: [kafka-net]
+    networks: [kafka-network]
     depends_on:
       kafka-1: { condition: service_healthy }
       kafka-2: { condition: service_healthy }
@@ -153,22 +162,33 @@ services:
     restart: "no"
 
   kafka-ui:
-    # La guia usa la etiqueta latest; se fija v0.7.2, que es la version a la
-    # que apunta latest, para que el entorno no cambie solo entre ensayos.
     image: provectuslabs/kafka-ui:v0.7.2
     container_name: kafka-ui
-    networks: [kafka-net]
-    depends_on:
-      kafka-1: { condition: service_healthy }
-    ports: ["8090:8080"]
-    environment:
-      DYNAMIC_CONFIG_ENABLED: "true"
-      KAFKA_CLUSTERS_0_NAME: pedidos360
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper-1:2181
     restart: unless-stopped
+    depends_on: [kafka-1, kafka-2, kafka-3]
+    ports: ["8090:8080"]
+    networks: [kafka-network]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ClusterKafka
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      KAFKA_CLUSTERS_0_ZOOKEEPER: "zookeeper-1:2181,zookeeper-2:2181,zookeeper-3:2181"
+      DYNAMIC_CONFIG_ENABLED: "true"
+      JAVA_OPTS: "-Xms64m -Xmx128m"
 
 networks:
-  kafka-net:
-    name: kafka-net
+  kafka-network:
+    name: kafka-network
     driver: bridge
+
+# Volumenes con nombre, como en la guia: los datos sobreviven a docker compose
+# down. Solo docker compose down -v (o levantar-kafka.ps1 -Recrear) los borra.
+volumes:
+  zk1-data:
+  zk1-log:
+  zk2-data:
+  zk2-log:
+  zk3-data:
+  zk3-log:
+  kafka1-data:
+  kafka2-data:
+  kafka3-data:
