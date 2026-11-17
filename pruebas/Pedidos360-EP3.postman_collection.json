@@ -1,0 +1,1602 @@
+{
+  "info": {
+    "_postman_id": "c3a5e7b9-22f4-4b8c-9d31-ep3pedidos360",
+    "name": "Pedidos360 EP3 - Kafka",
+    "description": "Pruebas de EP3: cluster de tres brokers, los dos topicos del caso, flujo de eventos, errores y DLT, las 8 pruebas del administrador de la guia 3.4.1, consumer groups, validacion y continuidad con EP1/EP2.\n\nDos environments:\n- \"Pedidos360 EP3 - local\": el ensayo de despliegue en Docker Desktop (despliegue\\probar-en-local.ps1), sin token.\n- \"Pedidos360 EP3 - EC2\": todo por el API Gateway con el JWT de un usuario Admin en la variable token (pruebas\\obtener-token.ps1 -Cuenta).\n\nCORRER CON EL COLLECTION RUNNER, la coleccion completa y con Delay = 1000 ms: las carpetas usan variables que fija la anterior, y las comprobaciones del consumo repiten su peticion hasta que el consumidor termina (setNextRequest solo funciona en el Runner).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Los tokens de Entra ID duran entre 60 y 90 minutos; si vence a mitad de la",
+          "// corrida, las peticiones siguientes reciben 401 y este aviso dice por que.",
+          "if (pm.response.code === 401) {",
+          "    pm.test('El token sigue vigente', () => pm.expect.fail('Token vencido o ausente: corre obtener-token.ps1 -Cuenta y pega el nuevo en la variable token'));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Preparacion",
+      "item": [
+        {
+          "name": "Obtener un producto del catalogo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('El catalogo responde 200', () => pm.response.to.have.status(200));",
+                  "const util = pm.response.json().find(p => p.activo && p.stock > 10);",
+                  "pm.test('Hay un producto con stock', () => pm.expect(util).to.exist);",
+                  "pm.environment.set('productoId', util.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlCatalogo}}/api/catalog",
+              "host": [
+                "{{urlCatalogo}}"
+              ],
+              "path": [
+                "api",
+                "catalog"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Eliminar restos del topico de prueba",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 si existia, 404 si no', () => pm.expect(pm.response.code).to.be.oneOf([200, 404]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1. Cluster y topicos del caso",
+      "item": [
+        {
+          "name": "Cluster: tres brokers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const ids = pm.response.json().brokers.map(b => b.id).sort();",
+                  "pm.test('Brokers 1, 2 y 3 activos', () => pm.expect(ids).to.eql([1, 2, 3]));",
+                  "pm.test('Hay un controlador', () => pm.expect(pm.response.json().controller).to.not.be.null);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/cluster",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "cluster"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Describir pedidos-eventos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.test('3 particiones', () => pm.expect(d.partitions.length).to.eql(3));",
+                  "pm.test('Factor de replicacion 3', () => pm.expect(d.replicationFactor).to.eql(3));",
+                  "pm.test('ISR completo: ninguna particion sub-replicada', () => pm.expect(d.underReplicated).to.eql(0));",
+                  "pm.test('Cada particion tiene lider, 3 replicas y 3 en ISR', () => d.partitions.forEach(p => {",
+                  "    pm.expect(p.leader).to.not.be.null;",
+                  "    pm.expect(p.replicas.length).to.eql(3);",
+                  "    pm.expect(p.isr.length).to.eql(3);",
+                  "}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-eventos",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-eventos"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Describir pedidos-auditoria",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.test('3 particiones', () => pm.expect(d.partitions.length).to.eql(3));",
+                  "pm.test('Factor de replicacion 3', () => pm.expect(d.replicationFactor).to.eql(3));",
+                  "pm.test('ISR completo: ninguna particion sub-replicada', () => pm.expect(d.underReplicated).to.eql(0));",
+                  "pm.test('Cada particion tiene lider, 3 replicas y 3 en ISR', () => d.partitions.forEach(p => {",
+                  "    pm.expect(p.leader).to.not.be.null;",
+                  "    pm.expect(p.replicas.length).to.eql(3);",
+                  "    pm.expect(p.isr.length).to.eql(3);",
+                  "}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-auditoria",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-auditoria"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Configuracion de pedidos-eventos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const c = pm.response.json();",
+                  "pm.test('retention.ms = 604800000', () => pm.expect(c['retention.ms']).to.eql('604800000'));",
+                  "pm.test('cleanup.policy = delete', () => pm.expect(c['cleanup.policy']).to.eql('delete'));",
+                  "pm.test('min.insync.replicas = 2', () => pm.expect(c['min.insync.replicas']).to.eql('2'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-eventos/configs",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-eventos",
+                "configs"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Configuracion de pedidos-auditoria",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const c = pm.response.json();",
+                  "pm.test('retention.ms = 2592000000', () => pm.expect(c['retention.ms']).to.eql('2592000000'));",
+                  "pm.test('cleanup.policy = delete', () => pm.expect(c['cleanup.policy']).to.eql('delete'));",
+                  "pm.test('min.insync.replicas = 2', () => pm.expect(c['min.insync.replicas']).to.eql('2'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-auditoria/configs",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-auditoria",
+                "configs"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Flujo de eventos",
+      "item": [
+        {
+          "name": "Crear pedido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('pedidoId', pm.response.json().id);",
+                  "pm.environment.set('codigoPedido', pm.response.json().codigo);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlPedidos}}/api/orders",
+              "host": [
+                "{{urlPedidos}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clienteEmail\": \"cliente@duoc.cl\",\n  \"clienteNombre\": \"Prueba EP3\",\n  \"direccionEntrega\": \"Av. Siempre Viva 742\",\n  \"items\": [\n    {\n      \"productoId\": {{productoId}},\n      \"cantidad\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Pedido: accept",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{urlPedidos}}/api/orders/{{pedidoId}}/accept",
+              "host": [
+                "{{urlPedidos}}"
+              ],
+              "path": [
+                "api",
+                "orders",
+                "{{pedidoId}}",
+                "accept"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Pedido: prepare",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{urlPedidos}}/api/orders/{{pedidoId}}/prepare",
+              "host": [
+                "{{urlPedidos}}"
+              ],
+              "path": [
+                "api",
+                "orders",
+                "{{pedidoId}}",
+                "prepare"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Pedido: ship",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{urlPedidos}}/api/orders/{{pedidoId}}/ship",
+              "host": [
+                "{{urlPedidos}}"
+              ],
+              "path": [
+                "api",
+                "orders",
+                "{{pedidoId}}",
+                "ship"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Pedido: deliver",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{urlPedidos}}/api/orders/{{pedidoId}}/deliver",
+              "host": [
+                "{{urlPedidos}}"
+              ],
+              "path": [
+                "api",
+                "orders",
+                "{{pedidoId}}",
+                "deliver"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Auditoria del pedido (pedidos-auditoria)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const intentos = Number(pm.collectionVariables.get('esperaAuditoria') || 0);",
+                  "if (!(pm.response.json().length >= 5) && intentos < 30) {",
+                  "    pm.collectionVariables.set('esperaAuditoria', intentos + 1);",
+                  "    setTimeout(() => {}, 1000);",
+                  "    pm.execution.setNextRequest(pm.info.requestName);",
+                  "    return;",
+                  "}",
+                  "pm.collectionVariables.unset('esperaAuditoria');",
+                  "pm.test('Llegaron las 5 acciones', () => pm.expect(pm.response.json().length >= 5).to.be.true);",
+                  "const h = pm.response.json();",
+                  "pm.test('En orden: CREAR, ACEPTAR, PREPARAR, DESPACHAR, ENTREGAR', () =>",
+                  "    pm.expect(h.map(x => x.accion)).to.eql(['CREAR', 'ACEPTAR', 'PREPARAR', 'DESPACHAR', 'ENTREGAR']));",
+                  "pm.test('Todas en la misma particion (key = codigo del pedido)', () => pm.expect(new Set(h.map(x => x.particion)).size).to.eql(1));",
+                  "pm.test('Offsets crecientes', () => h.forEach((x, i) => { if (i > 0) pm.expect(x.offset).to.be.above(h[i - 1].offset); }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlReportes}}/api/reportes/auditoria?pedido={{codigoPedido}}",
+              "host": [
+                "{{urlReportes}}"
+              ],
+              "path": [
+                "api",
+                "reportes",
+                "auditoria"
+              ],
+              "query": [
+                {
+                  "key": "pedido",
+                  "value": "{{codigoPedido}}"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reporte del pedido (pedidos-eventos)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const fila = pm.response.json().find(p => p.codigo === pm.environment.get('codigoPedido'));",
+                  "pm.test('El pedido aparece ENTREGADO con sus 5 eventos', () => {",
+                  "    pm.expect(fila).to.exist;",
+                  "    pm.expect(fila.eventosRecibidos).to.eql(5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlReportes}}/api/reportes/pedidos?estado=ENTREGADO",
+              "host": [
+                "{{urlReportes}}"
+              ],
+              "path": [
+                "api",
+                "reportes",
+                "pedidos"
+              ],
+              "query": [
+                {
+                  "key": "estado",
+                  "value": "ENTREGADO"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Resumen de la reporteria",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 con pedidos contados por estado', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().totalPedidos).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlReportes}}/api/reportes/pedidos/resumen",
+              "host": [
+                "{{urlReportes}}"
+              ],
+              "path": [
+                "api",
+                "reportes",
+                "pedidos",
+                "resumen"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Error controlado: reintentos y DLT",
+      "item": [
+        {
+          "name": "Mensajes en pedidos-eventos-dlt (antes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('El DLT existe', () => pm.response.to.have.status(200));",
+                  "pm.environment.set('dltAntes', pm.response.json().messages);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-eventos-dlt",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-eventos-dlt"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Crear pedido con error-kafka@",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('El pedido se crea igual: el negocio no depende del consumidor', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('codigoFallido', pm.response.json().codigo);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlPedidos}}/api/orders",
+              "host": [
+                "{{urlPedidos}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clienteEmail\": \"error-kafka@pedidos360.cl\",\n  \"clienteNombre\": \"Prueba EP3\",\n  \"direccionEntrega\": \"Av. Siempre Viva 742\",\n  \"items\": [\n    {\n      \"productoId\": {{productoId}},\n      \"cantidad\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "El evento llego a pedidos-eventos-dlt",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const intentos = Number(pm.collectionVariables.get('esperaDlt') || 0);",
+                  "if (!(pm.response.json().messages > Number(pm.environment.get(\"dltAntes\"))) && intentos < 30) {",
+                  "    pm.collectionVariables.set('esperaDlt', intentos + 1);",
+                  "    setTimeout(() => {}, 1000);",
+                  "    pm.execution.setNextRequest(pm.info.requestName);",
+                  "    return;",
+                  "}",
+                  "pm.collectionVariables.unset('esperaDlt');",
+                  "pm.test('Tras 3 intentos (1 s entre ellos) el evento esta en el DLT', () => pm.expect(pm.response.json().messages > Number(pm.environment.get(\"dltAntes\"))).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-eventos-dlt",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-eventos-dlt"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "El consumidor sigue activo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reportes-pedidos sigue STABLE', () => pm.expect(pm.response.json().state).to.eql('STABLE'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/consumer-groups/reportes-pedidos",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "consumer-groups",
+                "reportes-pedidos"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Administrador Kafka (guia 3.4.1)",
+      "item": [
+        {
+          "name": "P1 Listar topicos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Incluye los dos topicos del caso', () => pm.expect(pm.response.json()).to.include.members(['pedidos-eventos', 'pedidos-auditoria']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P2 Crear topico de prueba",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{topicoPrueba}}\",\n  \"partitions\": 3,\n  \"replicationFactor\": 3,\n  \"configs\": {\n    \"retention.ms\": \"86400000\",\n    \"cleanup.policy\": \"delete\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P3 Describir topico de prueba",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.test('3 particiones, 3 replicas, ISR completo', () => {",
+                  "    pm.expect(d.partitions.length).to.eql(3);",
+                  "    pm.expect(d.replicationFactor).to.eql(3);",
+                  "    pm.expect(d.underReplicated).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P4 Consultar configuracion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retention.ms y cleanup.policy', () => {",
+                  "    pm.expect(pm.response.json()['retention.ms']).to.eql('86400000');",
+                  "    pm.expect(pm.response.json()['cleanup.policy']).to.eql('delete');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}/configs",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}",
+                "configs"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P5 Modificar retention.ms",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}/configs",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}",
+                "configs"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"configName\": \"retention.ms\",\n  \"value\": \"172800000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P5 Comprobar retention.ms",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retention.ms = 172800000 (48 h)', () => pm.expect(pm.response.json()['retention.ms']).to.eql('172800000'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}/configs",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}",
+                "configs"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P6 Aumentar particiones",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}/partitions",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}",
+                "partitions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"totalPartitions\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P6 Comprobar particiones",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const intentos = Number(pm.collectionVariables.get('esperaParticiones') || 0);",
+                  "if (!(pm.response.json().partitions.length === 4) && intentos < 10) {",
+                  "    pm.collectionVariables.set('esperaParticiones', intentos + 1);",
+                  "    setTimeout(() => {}, 1000);",
+                  "    pm.execution.setNextRequest(pm.info.requestName);",
+                  "    return;",
+                  "}",
+                  "pm.collectionVariables.unset('esperaParticiones');",
+                  "pm.test('Ahora tiene 4 particiones', () => pm.expect(pm.response.json().partitions.length === 4).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P7 Consumer groups",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Estan los dos grupos de reportes', () =>",
+                  "    pm.expect(pm.response.json().map(g => g.groupId)).to.include.members(['reportes-pedidos', 'reportes-auditoria']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/consumer-groups",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "consumer-groups"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P8 Eliminar topico de prueba",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/{{topicoPrueba}}",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "{{topicoPrueba}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "P8 Comprobar que ya no esta",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const intentos = Number(pm.collectionVariables.get('esperaBorrado') || 0);",
+                  "if (!(!pm.response.json().includes(pm.environment.get(\"topicoPrueba\"))) && intentos < 10) {",
+                  "    pm.collectionVariables.set('esperaBorrado', intentos + 1);",
+                  "    setTimeout(() => {}, 1000);",
+                  "    pm.execution.setNextRequest(pm.info.requestName);",
+                  "    return;",
+                  "}",
+                  "pm.collectionVariables.unset('esperaBorrado');",
+                  "pm.test('El topico de prueba ya no aparece', () => pm.expect(!pm.response.json().includes(pm.environment.get(\"topicoPrueba\"))).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Consumer groups: offsets, lag y distribucion",
+      "item": [
+        {
+          "name": "Estado de reportes-pedidos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.test('STABLE', () => pm.expect(d.state).to.eql('STABLE'));",
+                  "pm.test('3 miembros con una particion cada uno', () => {",
+                  "    pm.expect(d.members.length).to.eql(3);",
+                  "    d.members.forEach(m => pm.expect(m.partitions.length).to.eql(1));",
+                  "});",
+                  "pm.test('Lag por particion = endOffset - committedOffset', () =>",
+                  "    d.offsets.forEach(o => pm.expect(o.lag).to.eql(o.endOffset - o.committedOffset)));",
+                  "console.log('reportes-pedidos: lag total', d.totalLag);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/consumer-groups/reportes-pedidos",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "consumer-groups",
+                "reportes-pedidos"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Estado de reportes-auditoria",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.test('STABLE', () => pm.expect(d.state).to.eql('STABLE'));",
+                  "pm.test('3 miembros con una particion cada uno', () => {",
+                  "    pm.expect(d.members.length).to.eql(3);",
+                  "    d.members.forEach(m => pm.expect(m.partitions.length).to.eql(1));",
+                  "});",
+                  "pm.test('Lag por particion = endOffset - committedOffset', () =>",
+                  "    d.offsets.forEach(o => pm.expect(o.lag).to.eql(o.endOffset - o.committedOffset)));",
+                  "console.log('reportes-auditoria: lag total', d.totalLag);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/consumer-groups/reportes-auditoria",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "consumer-groups",
+                "reportes-auditoria"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Metricas del caso",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('3 brokers y los topicos del caso', () => {",
+                  "    pm.expect(pm.response.json().brokers).to.eql(3);",
+                  "    pm.expect(pm.response.json().topics.map(t => t.name)).to.include.members(['pedidos-eventos', 'pedidos-auditoria']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/metricas",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "metricas"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. Validacion: 400, 404 y 409",
+      "item": [
+        {
+          "name": "Topico sin nombre (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 que nombra el campo', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().parametro).to.eql('name'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"\",\n  \"partitions\": 3,\n  \"replicationFactor\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Factor de replicacion 4 (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 en replicationFactor', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().parametro).to.eql('replicationFactor'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"pedidos-rf4\",\n  \"partitions\": 3,\n  \"replicationFactor\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "retention.ms negativo (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-eventos/configs",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-eventos",
+                "configs"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"configName\": \"retention.ms\",\n  \"value\": \"-5\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Eliminar un topico del caso (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409: los topicos del caso estan protegidos', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/pedidos-eventos",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "pedidos-eventos"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Eliminar un grupo del caso (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/consumer-groups/reportes-pedidos",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "consumer-groups",
+                "reportes-pedidos"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Topico inexistente (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 y no 500', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlKafkaAdmin}}/api/kafka/topics/no-existe-ep3",
+              "host": [
+                "{{urlKafkaAdmin}}"
+              ],
+              "path": [
+                "api",
+                "kafka",
+                "topics",
+                "no-existe-ep3"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reporte con estado inexistente (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlReportes}}/api/reportes/pedidos?estado=PERDIDO",
+              "host": [
+                "{{urlReportes}}"
+              ],
+              "path": [
+                "api",
+                "reportes",
+                "pedidos"
+              ],
+              "query": [
+                {
+                  "key": "estado",
+                  "value": "PERDIDO"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "7. Continuidad con EP1 y EP2",
+      "item": [
+        {
+          "name": "RabbitMQ sigue operativo (EP2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('6 colas y sus consumidores', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().colasActivas).to.eql(6);",
+                  "    pm.expect(pm.response.json().consumidores).to.be.at.least(3);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlRabbitAdmin}}/api/rabbitmq/metricas",
+              "host": [
+                "{{urlRabbitAdmin}}"
+              ],
+              "path": [
+                "api",
+                "rabbitmq",
+                "metricas"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Pedidos sigue operativo (EP1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{urlPedidos}}/api/orders",
+              "host": [
+                "{{urlPedidos}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
