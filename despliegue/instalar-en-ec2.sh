@@ -1,6 +1,7 @@
 #!/bin/bash
-# Instala o actualiza el despliegue de EP2 en la EC2. Se ejecuta EN la instancia,
-# como root, y lo invoca aws/07-desplegar-ep2.ps1 despues de subir el paquete.
+# Instala o actualiza el despliegue (EP1 + EP2 + EP3) en la EC2. Se ejecuta EN la
+# instancia, como root, y lo invoca aws/07-desplegar-ep3.ps1 despues de subir el
+# paquete.
 #
 # Es idempotente: correrlo dos veces deja lo mismo que correrlo una. Las
 # credenciales que genera (cookie de Erlang, usuario de RabbitMQ) se crean solo
@@ -10,6 +11,7 @@
 # Espera encontrar en /opt/pedidos360-ep2:
 #   despliegue/docker-compose.yml, despliegue/oracle.env
 #   rabbitmq-cluster/rabbitmq-{1,2}/rabbitmq.conf
+#   kafka-cluster/crear-topicos.sh
 #   ms-pedidos360-*/Dockerfile, pom.xml y src/main (el codigo: la imagen
 #   compila con Maven, ver el Dockerfile)
 #   wallet/
@@ -47,6 +49,41 @@ docker --version
 docker compose version
 
 # ---------------------------------------------------------------------------
+paso "Memoria y disco"
+# ---------------------------------------------------------------------------
+# EP3 suma el cluster Kafka (7 contenedores) y dos microservicios a los 8 de
+# EP2. Con 4 GB (t3.medium) el kernel empieza a matar contenedores por falta de
+# memoria; por eso se exige una instancia de 8 GB (t3.large) antes de seguir.
+MEMORIA_MB=$(free -m | awk '/^Mem:/{print $2}')
+if [ "$MEMORIA_MB" -lt 7000 ]; then
+    echo "  [FALLA] La instancia tiene ${MEMORIA_MB} MB de memoria y EP3 necesita unos 8 GB."
+    echo "          Cambia el tipo a t3.large: .\\07-desplegar-ep3.ps1 -CambiarTipo"
+    exit 1
+fi
+echo "  memoria: ${MEMORIA_MB} MB"
+
+# Si el volumen se amplio desde AWS, la particion y el sistema de archivos
+# siguen del tamano anterior hasta que se extienden aqui. Los dos comandos no
+# hacen nada si ya ocupan todo el disco.
+DISCO_RAIZ=$(findmnt -n -o SOURCE /)
+DISCO=$(lsblk -n -o PKNAME "$DISCO_RAIZ" | head -1)
+PARTICION=$(echo "$DISCO_RAIZ" | grep -o '[0-9]*$')
+if [ -n "$DISCO" ] && [ -n "$PARTICION" ]; then
+    growpart "/dev/$DISCO" "$PARTICION" >/dev/null 2>&1 || true
+    xfs_growfs / >/dev/null 2>&1 || true
+fi
+# Lo que ya no usa ningun contenedor: imagenes de despliegues anteriores.
+docker image prune -f >/dev/null 2>&1 || true
+LIBRE_MB=$(df -m --output=avail / | tail -1 | tr -d ' ')
+if [ "$LIBRE_MB" -lt 5000 ]; then
+    echo "  [FALLA] Quedan ${LIBRE_MB} MB libres en disco. Las imagenes de Kafka y los dos"
+    echo "          microservicios nuevos necesitan unos 5 GB."
+    echo "          Amplia el volumen: .\\07-desplegar-ep3.ps1 -DiscoGb 20"
+    exit 1
+fi
+echo "  disco libre: ${LIBRE_MB} MB"
+
+# ---------------------------------------------------------------------------
 paso "Servicios de EP1"
 # ---------------------------------------------------------------------------
 # Catalogo, pedidos y el BFF pasan a contenedores, como exige la guia. Si
@@ -77,6 +114,17 @@ if [ ! -s "$DESPLIEGUE/.env" ]; then
     echo "  credenciales de RabbitMQ generadas"
 else
     echo "  credenciales de RabbitMQ conservadas"
+fi
+# EP3: usuario de Kafka UI. Se agrega aparte porque en una EC2 que viene de EP2
+# el .env ya existe, con la cookie y el usuario de RabbitMQ, y no se regenera.
+if ! grep -q '^KAFKAUI_PASS=' "$DESPLIEGUE/.env"; then
+    {
+        echo "KAFKAUI_USER=pedidos360"
+        echo "KAFKAUI_PASS=$(openssl rand -hex 16)"
+    } >> "$DESPLIEGUE/.env"
+    echo "  credenciales de Kafka UI generadas"
+else
+    echo "  credenciales de Kafka UI conservadas"
 fi
 chmod 600 "$DESPLIEGUE/.env"
 
@@ -117,7 +165,7 @@ construir() {
     docker build -q -t "pedidos360/$1:ep2" "$2" >/dev/null
     echo "  pedidos360/$1:ep2 lista"
 }
-for m in catalog orders notify rabbitadmin; do
+for m in catalog orders notify rabbitadmin reportes kafkaadmin; do
     construir "$m" "$RAIZ/ms-pedidos360-$m"
 done
 construir bff "$RAIZ/bff"
@@ -135,7 +183,7 @@ $COMPOSE up -d --remove-orphans
 # este despliegue sigue montando la carpeta que existia cuando arranco; si
 # alguien la borro y la volvio a crear, el contenedor la ve vacia y falla al
 # abrir conexiones nuevas a Oracle. Reiniciarlo vuelve a montar la actual.
-for servicio in catalog orders; do
+for servicio in catalog orders reportes; do
     if ! docker exec "ms-pedidos360-$servicio" test -f /app/wallet/tnsnames.ora 2>/dev/null; then
         $COMPOSE restart "$servicio" >/dev/null 2>&1
         echo "  $servicio reiniciado: no veia el wallet actual"
@@ -149,8 +197,11 @@ done
 # con el nombre del contenedor para distinguir que linea es de cada uno.
 cat > /usr/local/bin/logs-demo <<EOF
 #!/bin/bash
-# Logs en vivo de ms-pedidos360-orders y ms-pedidos360-notify. Ctrl+C para salir.
-exec sudo docker compose --project-directory $DESPLIEGUE -f $DESPLIEGUE/docker-compose.yml logs -f --tail 15 orders notify
+# Logs en vivo de orders (productor), notify (consumidor RabbitMQ) y reportes
+# (consumidor Kafka). Ctrl+C para salir. Con argumentos, solo esos servicios:
+#   logs-demo orders reportes
+SERVICIOS="\${*:-orders notify reportes}"
+exec sudo docker compose --project-directory $DESPLIEGUE -f $DESPLIEGUE/docker-compose.yml logs -f --tail 15 \$SERVICIOS
 EOF
 chmod 755 /usr/local/bin/logs-demo
 
@@ -191,6 +242,29 @@ docker exec rabbitmq-1 rabbitmqctl cluster_status 2>/dev/null |
     awk '/^Running Nodes/{f=1;next} /^[A-Z]/{f=0} f && /^rabbit@/{print "    " $0}'
 
 # ---------------------------------------------------------------------------
+paso "Cluster Kafka"
+# ---------------------------------------------------------------------------
+# kafka-init espera a los tres brokers, crea los topicos y termina: su codigo de
+# salida dice si el cluster quedo listo.
+for _ in $(seq 1 60); do
+    estado_init=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' kafka-init 2>/dev/null || true)
+    case "$estado_init" in exited*) break ;; esac
+    sleep 5
+done
+if [ "$estado_init" != "exited 0" ]; then
+    echo "  [FALLA] Los topicos no se crearon (kafka-init: ${estado_init:-sin estado})."
+    docker logs --tail 20 kafka-init 2>&1 | sed 's/^/    /'
+    exit 1
+fi
+# Brokers registrados en ZooKeeper: deben ser 1, 2 y 3.
+echo "  brokers: $(docker exec zookeeper-1 zookeeper-shell localhost:2181 ls /brokers/ids 2>/dev/null | tail -1 || true)"
+descripcion=$(docker exec kafka-1 kafka-topics --bootstrap-server kafka-1:9092 --describe 2>/dev/null || true)
+for topico in pedidos-eventos pedidos-auditoria; do
+    grep "^Topic: $topico[[:space:]]" <<<"$descripcion" |
+        sed -E 's/TopicId: [^[:space:]]+[[:space:]]+//; s/Configs:.*//; s/^/  /' || true
+done
+
+# ---------------------------------------------------------------------------
 paso "Salud de los servicios"
 # ---------------------------------------------------------------------------
 # Que cuenta como "responde" depende del servicio:
@@ -202,6 +276,9 @@ responde() {
     case "$1" in
         bff)
             [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:8080/api/catalog)" = "401" ] ;;
+        kafka-ui)
+            # Cualquier respuesta HTTP sirve: sin sesion, redirige al login.
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:8090/)" != "000" ] ;;
         frontend)
             curl -fs -m 5 http://127.0.0.1/app/ | grep '<base href="/Desarrollo/app/">' >/dev/null ;;
         *)
@@ -218,14 +295,14 @@ responde() {
 # usuario inexistente, que acumulo 75 intentos en minutos. Por eso, apenas
 # aparece ORA-01017 se detienen los dos, en vez de esperar a que agoten el
 # tiempo de espera.
-pendientes="8082 8081 8083 8084 bff frontend"
+pendientes="8082 8081 8083 8084 8085 8086 bff frontend kafka-ui"
 for _ in $(seq 1 60); do
-    for c in ms-pedidos360-catalog ms-pedidos360-orders; do
+    for c in ms-pedidos360-catalog ms-pedidos360-orders ms-pedidos360-reportes; do
         # Sin -q: grep -q corta la tuberia al primer hallazgo, docker logs recibe
         # SIGPIPE y con pipefail la tuberia entera da falso justo cuando SI
         # encontro el error. Leyendo todo, la condicion es fiable.
         if docker logs --since "$INICIO" "$c" 2>&1 | grep -E "ORA-01017|ORA-28000" >/dev/null; then
-            $COMPOSE stop catalog orders >/dev/null 2>&1
+            $COMPOSE stop catalog orders reportes >/dev/null 2>&1
             echo
             echo "  [FALLA] Oracle rechazo el usuario o la contrasena ($c)."
             echo "          Se detuvieron catalogo y pedidos para no bloquear la cuenta ADMIN."
@@ -244,6 +321,8 @@ done
 
 for par in 8082:catalog:ms-pedidos360-catalog 8081:orders:ms-pedidos360-orders \
            8083:notify:ms-pedidos360-notify 8084:rabbitadmin:ms-pedidos360-rabbitadmin \
+           8085:reportes:ms-pedidos360-reportes 8086:kafkaadmin:ms-pedidos360-kafkaadmin \
+           kafka-ui:kafka-ui:kafka-ui \
            bff:bff:bff-pedidos360 frontend:frontend:frontend-pedidos360; do
     clave=${par%%:*}; resto=${par#*:}; nombre=${resto%%:*}; contenedor=${resto##*:}
     if responde "$clave"; then

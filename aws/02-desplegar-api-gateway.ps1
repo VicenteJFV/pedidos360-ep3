@@ -181,7 +181,11 @@ $rutasFuncionales = @(
     @{ Metodo = "POST";   Ruta = "/api/catalog" },
     # EP2: API administradora de RabbitMQ. Una sola ruta para todos sus endpoints;
     # el BFF la reenvia a rabbitadmin y exige el rol Admin.
-    @{ Metodo = "ANY";    Ruta = "/api/rabbitmq/{proxy+}" }
+    @{ Metodo = "ANY";    Ruta = "/api/rabbitmq/{proxy+}" },
+    # EP3: administrador Kafka y reporteria/auditoria. Igual que RabbitMQ: el
+    # BFF los reenvia a kafkaadmin y reportes y exige el rol Admin.
+    @{ Metodo = "ANY";    Ruta = "/api/kafka/{proxy+}" },
+    @{ Metodo = "GET";    Ruta = "/api/reportes/{proxy+}" }
 )
 
 $rutasExistentes = (Invoke-Aws @("apigatewayv2", "get-routes", "--api-id", $apiId, "--max-results", "500")).Items

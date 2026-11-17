@@ -1,0 +1,17 @@
+# Ajustes para probar el despliegue completo en Docker Desktop, sin la EC2.
+# Lo usa despliegue/probar-en-local.ps1 junto con docker-compose.yml.
+#
+# Unica diferencia con la nube: catalogo, pedidos y reportes usan la base H2 en
+# memoria del perfil dev en vez de Oracle. Asi el ensayo no necesita el wallet
+# ni la contrasena de ADMIN, y no gasta sesiones de la base Always Free.
+
+services:
+  catalog:
+    environment:
+      SPRING_PROFILE: dev
+  orders:
+    environment:
+      SPRING_PROFILE: dev
+  reportes:
+    environment:
+      SPRING_PROFILE: dev
