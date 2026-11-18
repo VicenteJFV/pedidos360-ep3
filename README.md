@@ -1,19 +1,172 @@
-# Pedidos360 — RabbitMQ, AWS y Microservicios (EP2 DSY1107)
+# Pedidos360 — Kafka, RabbitMQ, AWS y Microservicios (EP3 DSY1107)
 
-Caso 0 — Pedidos360. Este repositorio es la **evolución de EP1 incorporando RabbitMQ**: conserva el dominio, los microservicios, la seguridad y la persistencia de la primera entrega, y les agrega la mensajería que el caso ya definía en el diseño.
+Caso 0 — Pedidos360. Este repositorio es la **evolución de EP1 y EP2 incorporando Apache Kafka**: conserva el dominio, los microservicios, la seguridad, la persistencia y la mensajería RabbitMQ de las entregas anteriores, y les agrega la publicación, el consumo y la administración de eventos con Kafka.
 
 ```
-pedidos360-ep2/
-├── ms-pedidos360-orders/       Microservicio principal (8081) — pedidos, estados y PRODUCTOR
+pedidos360-ep3/
+├── ms-pedidos360-orders/       Microservicio principal (8081) — pedidos y estados; productor RabbitMQ y ÚNICO productor Kafka
 ├── ms-pedidos360-catalog/      Microservicio de catálogo (8082) — productos y stock
-├── ms-pedidos360-notify/       Consumidor RabbitMQ (8083) — sin base de datos        [EP2]
-├── ms-pedidos360-rabbitadmin/  Administrador de RabbitMQ (8084) — REST + RabbitAdmin [EP2]
-├── rabbitmq-cluster/           Clúster de dos nodos con Docker Compose               [EP2]
+├── ms-pedidos360-notify/       Consumidor RabbitMQ (8083) — sin base de datos            [EP2]
+├── ms-pedidos360-rabbitadmin/  Administrador de RabbitMQ (8084) — REST + RabbitAdmin     [EP2]
+├── ms-pedidos360-reportes/     Consumidor Kafka (8085) — reportería y auditoría          [EP3]
+├── ms-pedidos360-kafkaadmin/   Administrador de Kafka (8086) — REST + AdminClient        [EP3]
+├── bff/                        BFF (8080) — JWT de Entra ID y autorización por rol
+├── frontend/                   Angular + MSAL
+├── rabbitmq-cluster/           Clúster RabbitMQ de dos nodos con Docker Compose          [EP2]
+├── kafka-cluster/              3 ZooKeeper + 3 brokers + Kafka UI con Docker Compose     [EP3]
+├── despliegue/                 Docker Compose de la EC2 (toda la solución) y su instalador
 ├── aws/                        Scripts de infraestructura y API Gateway
-└── pruebas/                    Verificación local y de EP2, token de Entra ID y Postman
+└── pruebas/                    Verificaciones, token de Entra ID, Postman y guiones de demostración
 ```
 
-`ms-pedidos360-orders` sigue siendo el dueño del negocio y ahora además publica eventos; los otros dos microservicios son nuevos. **El flujo de EP1 no se modificó**: sigue siendo síncrono donde corresponde, y la mensajería se limita a lo que el caso define como asíncrono —notificaciones, tickets de cocina y generación de documentos.
+`ms-pedidos360-orders` sigue siendo el dueño del negocio. **El flujo de EP1 no se modificó**, y RabbitMQ mantiene los flujos asíncronos de EP2 (notificaciones, tickets de cocina y documentos). Kafka se suma para lo que una cola no resuelve: **conservar el historial de hechos** del pedido para reportería y auditoría.
+
+# EP3 — Eventos con Apache Kafka
+
+## Arquitectura
+
+Es la de la sección 3 de la guía de EP3 y la guía práctica 3.4: tres nodos ZooKeeper, tres brokers y Kafka UI, con Docker Compose (`kafka-cluster/docker-compose.yml`, Confluent Platform 7.6.1).
+
+| Componente | Servicio | Desde el equipo | Dentro de Docker |
+| :--- | :--- | :--- | :--- |
+| ZooKeeper 1, 2, 3 | `zookeeper-1..3` | `2181`, `2182`, `2183` | `zookeeper-N:2181` |
+| Broker 1 | `kafka-1` | `localhost:29092` | `kafka-1:9092` |
+| Broker 2 | `kafka-2` | `localhost:39092` | `kafka-2:9092` |
+| Broker 3 | `kafka-3` | `localhost:49092` | `kafka-3:9092` |
+| Kafka UI | `kafka-ui` | `http://localhost:8090` | — |
+
+Kafka UI usa el `8090` y no el `8080` de la guía porque el `8080` es el BFF desde EP1. Los tres brokers corren en el mismo equipo: el clúster tolera la caída de **un broker**, no la del equipo completo.
+
+## Los dos tópicos del caso
+
+Los crea `kafka-cluster/crear-topicos.sh` al levantar el clúster (contenedor `kafka-init`), con los nombres de la sección 4 de la guía:
+
+| Tópico | Para qué | Particiones | Réplicas | `retention.ms` | `cleanup.policy` |
+| :--- | :--- | :---: | :---: | :--- | :--- |
+| `pedidos-eventos` | Hechos del negocio → reportería | 3 | 3 | 7 días | `delete` |
+| `pedidos-auditoria` | Quién hizo qué → trazabilidad | 3 | 3 | 30 días | `delete` |
+| `pedidos-eventos-dlt` / `pedidos-auditoria-dlt` | Eventos que no se pudieron procesar | 3 | 3 | 14 días | `delete` |
+
+- **3 particiones:** hasta tres consumidores de un mismo grupo procesan en paralelo.
+- **3 réplicas con `min.insync.replicas=2`:** con `acks=all`, un evento se confirma cuando lo tienen dos de las tres réplicas; se puede caer un broker sin perder escrituras.
+- **`delete` y no `compact`:** la key es el código del pedido, y `compact` dejaría solo el último evento de cada pedido. Se perdería justo la historia que se audita.
+- **La auditoría dura más** que los eventos de negocio: la trazabilidad tiene que sobrevivir al dato operativo.
+
+## Productor único: `ms-pedidos360-orders`
+
+Es el microservicio principal del dominio (sección 4.3 de la guía): el que crea los pedidos y cambia su estado. Cada hecho publica **dos eventos**, con el mismo `KafkaTemplate`:
+
+| Acción | `pedidos-eventos` | `pedidos-auditoria` |
+| :--- | :--- | :--- |
+| Crear | `PEDIDO_CREADO` | `accion: CREAR` |
+| Aceptar, preparar, despachar, entregar, cancelar | `PEDIDO_ACEPTADO`, `PEDIDO_EN_PREPARACION`, `PEDIDO_DESPACHADO`, `PEDIDO_ENTREGADO`, `PEDIDO_CANCELADO` | `ACEPTAR`, `PREPARAR`, `DESPACHAR`, `ENTREGAR`, `CANCELAR` |
+
+```json
+{
+  "eventId": "6f1c2a9e-...",
+  "eventType": "PEDIDO_DESPACHADO",
+  "occurredAt": "2026-11-17T18:30:00Z",
+  "data": { "pedidoId": 12, "codigo": "PED-20261117-AB12CD34", "estado": "DESPACHADO",
+            "estadoAnterior": "EN_PREPARACION", "clienteEmail": "cliente@duoc.cl", "total": 15000.00, "cantidadItems": 2 }
+}
+```
+
+- **Estructura de la sección 5.4 de la guía:** `eventId`, `eventType`, `occurredAt` y `data`. El evento de auditoría agrega en `data` el `usuario` (del token, reenviado por el BFF en `X-Usuario`; nunca el token), el `origen` y el `eventoNegocioId` que lo enlaza con el evento de negocio.
+- **La key es el código del pedido:** todos los eventos de un pedido caen en la misma partición y llegan en orden.
+- **Se publica después del commit:** `PedidoService` solo emite un evento interno de Spring; `PublicadorEventosKafka` lo publica con `@TransactionalEventListener(AFTER_COMMIT)`. Si la operación se revierte, Kafka no registra nada, y la lógica de negocio no conoce Kafka.
+- **Configuración:** `JsonSerializer` sin cabecera `__TypeId__`, `acks=all`, idempotencia del productor y `max.block.ms=5000`: si Kafka cae, el pedido igual se confirma y el error queda en el log con tópico, key y `eventId`.
+
+## Consumidor: `ms-pedidos360-reportes`
+
+| Consumer group | Tópico | Qué hace | Miembros |
+| :--- | :--- | :--- | :---: |
+| `reportes-pedidos` | `pedidos-eventos` | Mantiene el último estado de cada pedido y el resumen por estado | 3 |
+| `reportes-auditoria` | `pedidos-auditoria` | Guarda la historia de acciones de cada pedido, con partición y offset | 3 |
+
+- `@KafkaListener` con DTO tipados (`JacksonJsonDeserializer` dentro de `ErrorHandlingDeserializer`), como la guía 3.3.2. La lógica vive en `ReporteService` y `AuditoriaService`.
+- **Dos grupos** dividen las responsabilidades por tópico; dentro de cada grupo, **tres miembros** se reparten las tres particiones.
+- Expone `GET /api/reportes/pedidos/resumen`, `GET /api/reportes/pedidos?estado=` y `GET /api/reportes/auditoria?pedido=`.
+
+### Errores: validación, reintentos, DLT e idempotencia
+
+| Situación | Qué pasa | Log |
+| :--- | :--- | :--- |
+| Error recuperable | 3 intentos con 1 s entre ellos (`FixedBackOff(1000, 2)`), luego al DLT | `ERROR DE PROCESAMIENTO ... intento n de 3` → `ENVIADO A DLT` |
+| Evento que no pasa la validación | Directo al DLT, sin reintentos | `EVENTO INVALIDO` → `ENVIADO A DLT` |
+| Mensaje que no es JSON | Directo al DLT con sus bytes originales | `MENSAJE ILEGIBLE` → `ENVIADO A DLT` |
+| Evento repetido | Se ignora: `PROCESSED_MESSAGES` ya tiene su `eventId` | `EVENTO DUPLICADO IGNORADO` |
+
+El error recuperable se provoca con un pedido cuyo correo es **`error-kafka@pedidos360.cl`**. No contiene los disparadores de EP2, así que RabbitMQ procesa ese pedido con normalidad. La marca de idempotencia y la actualización del reporte van en la misma transacción.
+
+## Administrador: `ms-pedidos360-kafkaadmin`
+
+Los endpoints de la guía práctica 3.4.1 (`KafkaAdminConfig`, `KafkaAdminService`, `KafkaAdminController`), más lo que pide la sección 6.2 de la guía de EP3:
+
+| Método y ruta | Operación |
+| :--- | :--- |
+| `GET /api/kafka/topics` | Lista los tópicos |
+| `GET /api/kafka/topics/{name}` | Particiones, líder, réplicas, ISR y offsets |
+| `POST /api/kafka/topics` | Crea un tópico (`name`, `partitions`, `replicationFactor`, `configs`) |
+| `GET /api/kafka/topics/{name}/configs` | Configuración del tópico |
+| `PATCH /api/kafka/topics/{name}/configs` | Modifica una configuración (`configName`, `value`) |
+| `PATCH /api/kafka/topics/{name}/partitions` | Aumenta las particiones (`totalPartitions`) |
+| `DELETE /api/kafka/topics/{name}` | Elimina un tópico de prueba; los del caso responden `409` |
+| `GET /api/kafka/consumer-groups` | Lista los grupos |
+| `GET /api/kafka/consumer-groups/{groupId}` | Miembros, particiones asignadas, offsets y lag |
+| `DELETE /api/kafka/consumer-groups/{groupId}` | Elimina un grupo de prueba sin miembros |
+| `GET /api/kafka/cluster` · `GET /api/kafka/metricas` | Brokers y vista rápida del caso |
+
+Valida antes de llamar al clúster y responde `400` nombrando el campo, `404` si no existe y `409` ante conflictos. Entra por el API Gateway con JWT y por el BFF solo con el rol Admin, igual que `/api/rabbitmq`.
+
+## Kafka y RabbitMQ
+
+| | RabbitMQ (EP2) | Kafka (EP3) |
+| :--- | :--- | :--- |
+| Qué transporta | Órdenes de trabajo: enviar el correo, imprimir el ticket, generar la boleta | Hechos: el pedido se creó, se aceptó, se despachó |
+| Después de procesar | El mensaje sale de la cola | El evento queda retenido 7 o 30 días |
+| Quién consume | Un consumidor por cola | Cada consumer group lee todo el tópico, a su ritmo |
+
+Kafka no reemplaza a RabbitMQ ni duplica sus funciones: aceptar un pedido sigue mandando el correo y el ticket por RabbitMQ, y además deja el hecho registrado en Kafka.
+
+## Puesta en marcha de EP3 (local)
+
+```powershell
+cd kafka-cluster ; .\levantar-kafka.ps1
+```
+
+Levanta el clúster, crea los tópicos y muestra líder, réplicas e ISR de cada partición. Para probar **toda la solución** como corre en la EC2 —17 contenedores— sin gastar créditos:
+
+```powershell
+cd despliegue ; .\probar-en-local.ps1
+```
+
+Usa el mismo `despliegue/docker-compose.yml` de la nube, con la base en memoria en vez de Oracle. Para detenerlo: `.\probar-en-local.ps1 -Detener`.
+
+> **Windows con tilde en el nombre de usuario:** al correr un microservicio fuera de Docker (`java -jar` o `mvn spring-boot:run`), el cliente Kafka falla con `Unable to establish loopback connection`. Java crea sus sockets internos en la carpeta temporal del usuario y no acepta la tilde en esa ruta. Antes de arrancarlo, en la misma ventana: `$env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=C:\dev\tmp"`. En Docker y en la EC2 (Linux) no ocurre.
+
+## Despliegue de EP3 en la EC2
+
+Con Kafka, la solución usa unos 4,1 GB de memoria (medido con `docker stats` en el ensayo local), así que la EC2 pasa de t3.medium a **t3.large** (8 GB). La primera vez:
+
+```powershell
+cd aws ; .\01-credenciales-learner-lab.ps1 -DesdePortapapeles ; .\07-desplegar-ep3.ps1 -CambiarTipo -DiscoGb 20
+```
+
+Cambia el tipo de instancia, amplía el disco, abre el `8090` (Kafka UI, con login) y agrega `/api/kafka/{proxy+}` y `/api/reportes/{proxy+}` al API Gateway. Los usuarios de RabbitMQ y Kafka UI son `pedidos360`; sus contraseñas se generan en la EC2 (`sudo grep -E 'RABBITMQ_PASS|KAFKAUI_PASS' /opt/pedidos360-ep2/despliegue/.env`). **La t3.large cuesta el doble por hora: apaga el lab al terminar.**
+
+## Pruebas de EP3
+
+```powershell
+cd pruebas ; .\verificar-ep3.ps1 -PruebaCaida
+```
+
+Recorre clúster, tópicos, flujo de eventos, DLT, las 8 pruebas de la guía 3.4.1, consumer groups, validación, continuidad con EP2 y la caída y recuperación de `kafka-2`. Contra la EC2: `.\verificar-ep3.ps1 -BaseUrl <url del API Gateway> -Token <JWT de Admin>`. La colección `Pedidos360-EP3.postman_collection.json` cubre lo mismo, con los environments local y EC2. El guion de la presentación está en `pruebas/DEMOSTRACION-EP3.md`.
+
+| Prueba | Resultado |
+| :--- | :--- |
+| `mvn test` en orders · reportes · kafkaadmin · bff | 63 · 16 · 24 (+1 omitida en Windows) · 14 |
+| `verificar-ep3.ps1 -PruebaCaida` contra el ensayo local | 64/64 |
+| Despliegue en la EC2 | pendiente |
 
 ## Contrato de integración
 
