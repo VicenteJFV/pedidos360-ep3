@@ -6,10 +6,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.time.Duration;
 
 /**
  * Reenvio tal cual de una peticion hacia un microservicio interno: metodo, ruta,
@@ -24,6 +27,23 @@ import java.net.URI;
 final class Reenvio {
 
     private Reenvio() {
+    }
+
+    /**
+     * El RestTemplate de los reenvios administrativos.
+     *
+     * Usa el cliente HTTP de java.net.http y no el HttpURLConnection por defecto,
+     * que no admite PATCH: la API de la guia 3.4.1 modifica configuraciones y
+     * particiones con PATCH, y por el BFF respondia 500 ("Invalid HTTP method:
+     * PATCH"). HTTP/1.1 explicito para que el cliente no intente subir a HTTP/2
+     * contra los microservicios.
+     */
+    static RestTemplate nuevoRestTemplate() {
+        HttpClient cliente = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+        return new RestTemplate(new JdkClientHttpRequestFactory(cliente));
     }
 
     static ResponseEntity<String> reenviar(RestTemplate restTemplate, String baseUrl,

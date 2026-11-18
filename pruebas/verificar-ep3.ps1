@@ -189,10 +189,11 @@ Comprobar "Las acciones llegan en orden" ((($historia | ForEach-Object { $_.acci
 $particiones = @($historia | ForEach-Object { $_.particion } | Sort-Object -Unique)
 Comprobar "Todos los eventos del pedido van a la misma particion (key = codigo)" ($particiones.Count -eq 1) "particiones=$($particiones -join ',')"
 $offsets = @($historia | ForEach-Object { [long]$_.offset })
-$crecientes = $true; for ($i = 1; $i -lt $offsets.Count; $i++) { if ($offsets[$i] -le $offsets[$i - 1]) { $crecientes = $false } }
+$crecientes = $offsets.Count -ge 2; for ($i = 1; $i -lt $offsets.Count; $i++) { if ($offsets[$i] -le $offsets[$i - 1]) { $crecientes = $false } }
 Comprobar "Sus offsets son crecientes" $crecientes "offsets=$($offsets -join ',')"
 if ($nube) {
-    Comprobar "La auditoria registra al usuario del token, no 'sistema'" ($historia[0].usuario -ne "sistema") "usuario=$($historia[0].usuario)"
+    $usuario = if ($historia.Count -gt 0) { $historia[0].usuario } else { $null }
+    Comprobar "La auditoria registra al usuario del token, no 'sistema'" ($usuario -and $usuario -ne "sistema") "usuario=$usuario"
 }
 
 $reporte = $null

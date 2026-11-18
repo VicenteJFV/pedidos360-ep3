@@ -24,7 +24,7 @@ public class KafkaAdminController {
     private final String kafkaAdminBaseUrl;
 
     /** Package-private para poder reemplazarlo por un servidor simulado en las pruebas. */
-    final RestTemplate restTemplate = new RestTemplate();
+    final RestTemplate restTemplate = Reenvio.nuevoRestTemplate();
 
     public KafkaAdminController(
             @Value("${microservicios.kafkaadmin.base-url:http://127.0.0.1:8086}") String kafkaAdminBaseUrl) {

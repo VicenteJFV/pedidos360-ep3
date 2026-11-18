@@ -32,7 +32,7 @@ public class RabbitAdminController {
     private final String rabbitAdminBaseUrl;
 
     /** Package-private para poder reemplazarlo por un servidor simulado en las pruebas. */
-    final RestTemplate restTemplate = new RestTemplate();
+    final RestTemplate restTemplate = Reenvio.nuevoRestTemplate();
 
     public RabbitAdminController(
             @Value("${microservicios.rabbitadmin.base-url:http://127.0.0.1:8084}") String rabbitAdminBaseUrl) {

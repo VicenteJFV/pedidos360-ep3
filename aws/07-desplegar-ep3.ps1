@@ -149,8 +149,10 @@ if ($CambiarTipo -and $ec2.InstanceType -ne $TipoInstancia) {
         Invoke-Aws @("ec2", "stop-instances", "--instance-ids", $Instancia) | Out-Null
         Invoke-Nativo "aws" @("ec2", "wait", "instance-stopped", "--instance-ids", $Instancia, "--region", $Region) | Out-Null
     }
+    # Sintaxis abreviada (Value=...) y no JSON: PowerShell 5.1 quita las comillas
+    # internas al pasarle un JSON a un programa externo, y aws lo rechaza.
     $cambio = Invoke-Aws @("ec2", "modify-instance-attribute", "--instance-id", $Instancia,
-                           "--instance-type", "{`"Value`": `"$TipoInstancia`"}")
+                           "--instance-type", "Value=$TipoInstancia")
     if ($null -eq $cambio) { throw "El Learner Lab no permitio cambiar el tipo a $TipoInstancia." }
     $ec2 = (Invoke-Aws @("ec2", "describe-instances", "--instance-ids", $Instancia)).Reservations[0].Instances[0]
 } elseif ($ec2.InstanceType -ne $TipoInstancia) {

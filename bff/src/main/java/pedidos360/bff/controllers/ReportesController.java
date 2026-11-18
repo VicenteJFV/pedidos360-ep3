@@ -23,7 +23,7 @@ public class ReportesController {
     private final String reportesBaseUrl;
 
     /** Package-private para poder reemplazarlo por un servidor simulado en las pruebas. */
-    final RestTemplate restTemplate = new RestTemplate();
+    final RestTemplate restTemplate = Reenvio.nuevoRestTemplate();
 
     public ReportesController(
             @Value("${microservicios.reportes.base-url:http://127.0.0.1:8085}") String reportesBaseUrl) {
