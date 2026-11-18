@@ -164,9 +164,9 @@ Recorre clúster, tópicos, flujo de eventos, DLT, las 8 pruebas de la guía 3.4
 
 | Prueba | Resultado |
 | :--- | :--- |
-| `mvn test` en orders · reportes · kafkaadmin · bff | 63 · 16 · 24 (+1 omitida en Windows) · 14 |
+| `mvn test` en orders · reportes · kafkaadmin · bff | 63 · 16 · 24 (+1 omitida en Windows) · 15 |
 | `verificar-ep3.ps1 -PruebaCaida` contra el ensayo local | 64/64 |
-| Despliegue en la EC2 | pendiente |
+| `verificar-ep3.ps1` contra la EC2, por el API Gateway con JWT de Admin | 61/61 |
 
 ## Contrato de integración
 
