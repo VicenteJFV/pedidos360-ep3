@@ -118,6 +118,19 @@ Los endpoints de la guía práctica 3.4.1 (`KafkaAdminConfig`, `KafkaAdminServic
 
 Valida antes de llamar al clúster y responde `400` nombrando el campo, `404` si no existe y `409` ante conflictos. Entra por el API Gateway con JWT y por el BFF solo con el rol Admin, igual que `/api/rabbitmq`.
 
+## Frontend: pestaña Kafka
+
+El menú de Admin tiene una pestaña **Kafka** (`/app/kafka`, `components/kafka-panel`) que consume, por el API Gateway y el BFF, los mismos endpoints de `reportes` y `kafkaadmin`. Se actualiza sola cada 3 segundos, así que el flujo completo se demuestra desde la aplicación:
+
+| Sección | Qué muestra | Endpoints |
+| :--- | :--- | :--- |
+| Encabezado | Brokers y controlador, estado de los grupos, lag total y mensajes en cada DLT (avisa si llegan nuevos) | `/api/kafka/cluster`, `/api/kafka/metricas` |
+| Eventos en vivo | Auditoría con acción, usuario, **partición y offset** (las filas nuevas se resaltan) y la reportería con el resumen por estado | `/api/reportes/auditoria`, `/api/reportes/pedidos/resumen`, `/api/reportes/pedidos` |
+| Tópicos y particiones | Por tópico: líder, réplicas, ISR, offsets, retención, `cleanup.policy` y `min.insync.replicas` | `/api/kafka/topics/{name}`, `/api/kafka/topics/{name}/configs` |
+| Consumer groups y lag | Por partición: miembro asignado, offset confirmado, último offset y lag | `/api/kafka/consumer-groups/{groupId}` |
+
+Kafka UI sigue siendo la herramienta de administración del clúster (crear tópicos, ver mensajes y cabeceras del DLT); la pestaña muestra cómo reacciona el sistema a los eventos.
+
 ## Kafka y RabbitMQ
 
 | | RabbitMQ (EP2) | Kafka (EP3) |

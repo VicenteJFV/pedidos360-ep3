@@ -17,7 +17,7 @@ Diez minutos, en el orden de la sección 10.1 de la guía de EP3. Todo corre en 
    sudo grep -E 'KAFKAUI_PASS|RABBITMQ_PASS' /opt/pedidos360-ep2/despliegue/.env
    ```
 5. **Pestañas del navegador:**
-   - Aplicación: `https://xpglku1pj5.execute-api.us-east-1.amazonaws.com/Desarrollo/app/` (sesión de Admin)
+   - Aplicación: `https://xpglku1pj5.execute-api.us-east-1.amazonaws.com/Desarrollo/app/` (sesión de Admin), en **dos pestañas**: una en **Catálogo / Panel Admin** y otra en **Kafka**.
    - Kafka UI: `http://32.194.66.142:8090`
    - RabbitMQ Management: `http://32.194.66.142:15672`
 6. **Postman:** colección *Pedidos360 EP3 - Kafka* con el environment *Pedidos360 EP3 - EC2* y un token de Admin recién obtenido (dura una hora):
@@ -65,10 +65,12 @@ sudo docker exec kafka-1 kafka-topics --bootstrap-server kafka-1:9092 --describe
 
 ## 3:30 – 5:30 · Publicación y consumo en vivo
 
-En la aplicación, como Admin:
+En la aplicación, como Admin, con la pestaña **Kafka → Eventos en vivo** abierta al lado:
 
 1. **Catálogo → Agregar al pedido → Mi pedido → Confirmar pedido.**
 2. **Panel Admin → Avanzar Estado** dos o tres veces.
+
+En la pestaña **Kafka**, sin recargar (se actualiza sola cada 3 s), aparece resaltada una fila de **Auditoría** por cada acción: acción, cambio de estado, usuario, **partición y offset**. En **Reportería** el pedido cambia de estado y suma eventos recibidos. Pincha el código del pedido: filtra su historia y se ve que todos sus eventos están en la misma partición con offsets crecientes.
 
 En la **Terminal 2** (`logs-demo`), por cada acción:
 
@@ -82,7 +84,7 @@ reportes: EVENTO PROCESADO | Topico: pedidos-auditoria | accion: ACEPTAR | usuar
 
 En **Kafka UI → Topics → `pedidos-eventos` → Messages**: el JSON del evento, con su key y su partición.
 
-En **Postman → 2. Flujo de eventos**, o directamente:
+Lo mismo que muestra la pestaña Kafka se puede pedir en **Postman → 2. Flujo de eventos**:
 
 ```
 GET {{urlReportes}}/api/reportes/auditoria?pedido=<codigo>
@@ -99,7 +101,9 @@ GET {{urlReportes}}/api/reportes/pedidos/resumen
 
 > «Para la eliminación se usa un tópico temporal. Los del caso están protegidos: `DELETE /api/kafka/topics/pedidos-eventos` responde 409.»
 
-**Consumer groups**, en Kafka UI → **Consumers → `reportes-pedidos`**, o en la Terminal 1:
+**Tópicos** en la aplicación, en **Kafka → Tópicos y particiones**: por cada tópico, las 3 particiones con su líder, réplicas e ISR, y la retención, `cleanup.policy` y `min.insync.replicas`.
+
+**Consumer groups**, en la aplicación, en **Kafka → Consumer groups y lag**: por partición, el miembro que la lee, el offset confirmado, el último offset y el lag. También en Kafka UI → **Consumers → `reportes-pedidos`**, o en la Terminal 1:
 
 ```
 sudo docker exec kafka-1 kafka-consumer-groups --bootstrap-server kafka-1:9092 --describe --group reportes-pedidos
@@ -109,7 +113,7 @@ sudo docker exec kafka-1 kafka-consumer-groups --bootstrap-server kafka-1:9092 -
 
 > «Hay dos grupos: `reportes-pedidos` lee `pedidos-eventos` para la reportería, y `reportes-auditoria` lee `pedidos-auditoria` para la trazabilidad. Cada grupo lleva sus propios offsets: si mañana otro sistema necesitara los mismos eventos, se conecta con su propio grupo y los lee completos sin afectar a estos.»
 
-**Error controlado:** crear un pedido con el correo **`error-kafka@pedidos360.cl`**. En `logs-demo`:
+**Error controlado:** desde la aplicación, como Admin, **Mi pedido** → en el correo del cliente escribe **`error-kafka@pedidos360.cl`** → Confirmar pedido. En la pestaña **Kafka**, a los pocos segundos la tarjeta **Dead Letter Topics** se pone amarilla: `pedidos-eventos-dlt` sube en 1 («+1 desde que abriste el panel»). El pedido sí aparece en Auditoría (otro grupo, otro tópico) pero no en Reportería. En `logs-demo`:
 
 ```
 reportes: ERROR DE PROCESAMIENTO | Topico: pedidos-eventos | ... | intento 1 de 3 | motivo: Fallo controlado ...

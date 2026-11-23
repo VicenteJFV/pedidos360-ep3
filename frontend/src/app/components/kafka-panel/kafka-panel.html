@@ -1,0 +1,255 @@
+<div class="kafka-container">
+  <div class="encabezado">
+    <h2>Panel Kafka</h2>
+    <div class="controles">
+      <span class="actualizado">
+        @if (enPausa()) { En pausa } @else { <span class="punto-vivo"></span> Actualizando cada 3 s }
+        @if (actualizado(); as a) { · {{ a | date:'HH:mm:ss' }} }
+      </span>
+      <button class="btn-sec" (click)="alternarPausa()">{{ enPausa() ? 'Reanudar' : 'Pausar' }}</button>
+      <button class="btn-sec" (click)="refrescar()">Actualizar ahora</button>
+    </div>
+  </div>
+
+  <!-- Estado del cluster: siempre visible -->
+  <div class="estado">
+    <div class="tarjeta">
+      <span class="etiqueta">Brokers activos</span>
+      <span class="valor">{{ cluster()?.brokers?.length ?? '—' }}</span>
+      <span class="nota">
+        @for (b of cluster()?.brokers ?? []; track b.id) {
+          <span class="chip" [class.controlador]="b.id === cluster()?.controller">kafka-{{ b.id }}</span>
+        }
+      </span>
+    </div>
+    <div class="tarjeta">
+      <span class="etiqueta">Controlador</span>
+      <span class="valor">{{ cluster() ? 'kafka-' + cluster()!.controller : '—' }}</span>
+      <span class="nota">elige el líder de cada partición</span>
+    </div>
+    <div class="tarjeta">
+      <span class="etiqueta">Consumer groups</span>
+      <span class="valor">{{ metricas()?.groups?.length ?? '—' }}</span>
+      <span class="nota">
+        @for (g of metricas()?.groups ?? []; track g.groupId) {
+          <span class="chip" [class.malo]="g.state !== 'STABLE'">{{ g.groupId }}: {{ g.state }} · {{ g.members }} miembros</span>
+        }
+      </span>
+    </div>
+    <div class="tarjeta" [class.alerta]="lagTotal() > 0">
+      <span class="etiqueta">Lag total</span>
+      <span class="valor">{{ metricas() ? lagTotal() : '—' }}</span>
+      <span class="nota">{{ lagTotal() === 0 ? 'los consumidores van al día' : 'eventos sin procesar' }}</span>
+    </div>
+    <div class="tarjeta" [class.alerta]="dltNuevos().length > 0">
+      <span class="etiqueta">Dead Letter Topics</span>
+      <span class="nota">
+        @for (t of dlt(); track t.name) {
+          <span class="chip" [class.malo]="t.messages > 0">{{ t.name }}: {{ t.messages }}</span>
+        }
+      </span>
+      @for (t of dltNuevos(); track t.name) {
+        <span class="nota rojo">+{{ t.nuevos }} desde que abriste el panel</span>
+      }
+    </div>
+  </div>
+
+  @if (errores().length) {
+    <div class="aviso-error">
+      No respondieron: @for (e of errores(); track e) { <code>{{ e }}</code> }
+    </div>
+  }
+
+  <div class="pestanas">
+    <button [class.activa]="pestana() === 'vivo'" (click)="cambiarPestana('vivo')">Eventos en vivo</button>
+    <button [class.activa]="pestana() === 'topicos'" (click)="cambiarPestana('topicos')">Tópicos y particiones</button>
+    <button [class.activa]="pestana() === 'grupos'" (click)="cambiarPestana('grupos')">Consumer groups y lag</button>
+  </div>
+
+  <!-- ===================== EN VIVO ===================== -->
+  @if (pestana() === 'vivo') {
+    <p class="ayuda">
+      <b>ms-pedidos360-orders</b> publica un evento en <code>pedidos-eventos</code> y otro en
+      <code>pedidos-auditoria</code> cada vez que un pedido cambia de estado.
+      <b>ms-pedidos360-reportes</b> los consume y esta vista muestra lo que ya procesó.
+      Crea o avanza un pedido en otra pestaña: la fila aparece aquí resaltada.
+    </p>
+
+    <div class="tabla-card">
+      <div class="card-titulo">
+        <h3>Auditoría <small>tópico pedidos-auditoria · grupo reportes-auditoria</small></h3>
+        <form class="filtro" (ngSubmit)="filtrar()">
+          <input name="pedido" [(ngModel)]="filtroPedido" placeholder="Código del pedido (PED-...)" />
+          <button class="btn-accion" type="submit">Filtrar</button>
+          @if (pedidoFiltrado()) {
+            <button class="btn-sec" type="button" (click)="limpiarFiltro()">Ver todos</button>
+          }
+        </form>
+      </div>
+      <div class="scroll">
+        <table class="tabla">
+          <thead>
+            <tr>
+              <th>Hora</th><th>Pedido</th><th>Acción</th><th>Cambio de estado</th>
+              <th>Usuario</th><th>Partición</th><th>Offset</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (r of auditoria(); track r.eventId) {
+              <tr [class.nueva]="esNueva(r)">
+                <td>{{ r.ocurridoEn | date:'HH:mm:ss' }}</td>
+                <td><a class="enlace" (click)="verAuditoria(r.codigoPedido)">{{ r.codigoPedido }}</a></td>
+                <td><span class="accion">{{ r.accion }}</span></td>
+                <td>{{ r.estadoAnterior ?? '—' }} → <b>{{ r.estadoNuevo }}</b></td>
+                <td class="usuario">{{ r.usuario }}</td>
+                <td class="num">{{ r.particion }}</td>
+                <td class="num">{{ r.offset }}</td>
+              </tr>
+            } @empty {
+              <tr><td colspan="7" class="vacio">Sin eventos de auditoría todavía.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      @if (pedidoFiltrado()) {
+        <p class="pie">
+          Todos los eventos de un pedido tienen la misma key (su código), así que caen en la
+          misma partición y llegan en orden: los offsets son crecientes.
+        </p>
+      }
+    </div>
+
+    <div class="tabla-card">
+      <div class="card-titulo">
+        <h3>Reportería <small>tópico pedidos-eventos · grupo reportes-pedidos</small></h3>
+        @if (resumen()?.ultimoEvento; as u) {
+          <span class="actualizado">Último evento procesado: {{ u | date:'dd-MM HH:mm:ss' }}</span>
+        }
+      </div>
+      <div class="resumen">
+        <div class="mini"><span class="etiqueta">Pedidos en el reporte</span><span class="valor">{{ resumen()?.totalPedidos ?? '—' }}</span></div>
+        <div class="mini"><span class="etiqueta">Ventas entregadas</span><span class="valor">{{ '$' + ((resumen()?.ventasEntregadas ?? 0) | number) }}</span></div>
+        @for (e of estados(); track e[0]) {
+          <div class="mini"><span class="etiqueta">{{ e[0] }}</span><span class="valor">{{ e[1].pedidos }}</span></div>
+        }
+      </div>
+      <div class="scroll corto">
+        <table class="tabla">
+          <thead>
+            <tr><th>Pedido</th><th>Cliente</th><th>Estado</th><th>Total</th><th>Eventos recibidos</th><th>Último evento</th></tr>
+          </thead>
+          <tbody>
+            @for (p of pedidos(); track p.codigo) {
+              <tr>
+                <td><a class="enlace" (click)="verAuditoria(p.codigo)">{{ p.codigo }}</a></td>
+                <td>{{ p.clienteEmail }}</td>
+                <td><span class="badge">{{ p.estado }}</span></td>
+                <td class="num">{{ p.total | number }}</td>
+                <td class="num">{{ p.eventosRecibidos }}</td>
+                <td>{{ p.ultimoEvento | date:'dd-MM HH:mm:ss' }}</td>
+              </tr>
+            } @empty {
+              <tr><td colspan="6" class="vacio">El reporte está vacío.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  }
+
+  <!-- ===================== TOPICOS ===================== -->
+  @if (pestana() === 'topicos') {
+    <p class="ayuda">
+      Cada tópico tiene <b>3 particiones</b> (tres consumidores en paralelo) y <b>3 réplicas</b>,
+      una en cada broker. El <b>líder</b> atiende la partición; el <b>ISR</b> son las réplicas al día.
+      Con <code>min.insync.replicas=2</code> y <code>acks=all</code>, se puede caer un broker sin perder escrituras.
+    </p>
+    <div class="grilla-topicos">
+      @for (nombre of topicos; track nombre) {
+        @let t = detalleTopicos()[nombre];
+        <div class="tabla-card">
+          <div class="card-titulo">
+            <h3>{{ nombre }}</h3>
+            @if (t) {
+              <span class="chip" [class.malo]="t.underReplicated > 0">
+                {{ t.underReplicated === 0 ? 'ISR completo' : t.underReplicated + ' particiones sin réplica completa' }}
+              </span>
+            }
+          </div>
+          <div class="configs">
+            <span>Mensajes: <b>{{ t?.messages ?? '—' }}</b></span>
+            <span>Réplicas: <b>{{ t?.replicationFactor ?? '—' }}</b></span>
+            <span>Retención: <b>{{ duracion(configs()[nombre]?.['retention.ms']) }}</b></span>
+            <span>cleanup.policy: <b>{{ configs()[nombre]?.['cleanup.policy'] ?? '—' }}</b></span>
+            <span>min.insync.replicas: <b>{{ configs()[nombre]?.['min.insync.replicas'] ?? '—' }}</b></span>
+          </div>
+          <table class="tabla compacta">
+            <thead><tr><th>Partición</th><th>Líder</th><th>Réplicas</th><th>ISR</th><th>Offsets</th></tr></thead>
+            <tbody>
+              @for (p of t?.partitions ?? []; track p.partition) {
+                <tr [class.malo-fila]="isrIncompleto(p)">
+                  <td class="num">{{ p.partition }}</td>
+                  <td>kafka-{{ p.leader }}</td>
+                  <td>{{ p.replicas.join(', ') }}</td>
+                  <td>{{ p.isr.join(', ') }}</td>
+                  <td class="num">{{ p.beginningOffset }} – {{ p.endOffset }}</td>
+                </tr>
+              } @empty {
+                <tr><td colspan="5" class="vacio">Cargando…</td></tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    </div>
+  }
+
+  <!-- ===================== GRUPOS ===================== -->
+  @if (pestana() === 'grupos') {
+    <p class="ayuda">
+      Cada grupo lleva sus propios offsets. <b>Lag</b> = último offset publicado − último offset confirmado.
+      Lag en 0: el consumidor va al día. Si crece y no baja, no da abasto o está detenido; si un grupo queda
+      sin miembros, nadie procesa; si un miembro concentra el lag, la carga está desbalanceada.
+    </p>
+    @for (nombre of ['reportes-pedidos', 'reportes-auditoria']; track nombre) {
+      @let g = grupos()[nombre];
+      <div class="tabla-card">
+        <div class="card-titulo">
+          <h3>{{ nombre }}</h3>
+          @if (g) {
+            <span class="chip" [class.malo]="g.state !== 'STABLE'">{{ g.state }}</span>
+            <span class="chip">coordinador: kafka-{{ g.coordinator }}</span>
+            <span class="chip">{{ g.members.length }} miembros</span>
+            <span class="chip" [class.malo]="g.totalLag > 0">lag total: {{ g.totalLag }}</span>
+          }
+        </div>
+        @if (g) {
+          <table class="tabla compacta">
+            <thead><tr><th>Tópico</th><th>Partición</th><th>Miembro</th><th>Offset confirmado</th><th>Último offset</th><th>Lag</th></tr></thead>
+            <tbody>
+              @for (o of g.offsets; track o.topic + o.partition) {
+                <tr>
+                  <td>{{ o.topic }}</td>
+                  <td class="num">{{ o.partition }}</td>
+                  <td>
+                    @for (m of g.members; track m.memberId) {
+                      @if (m.partitions.includes(o.topic + '-' + o.partition)) { {{ m.clientId }} }
+                    }
+                  </td>
+                  <td class="num">{{ o.committedOffset }}</td>
+                  <td class="num">{{ o.endOffset }}</td>
+                  <td class="lag">
+                    <span class="barra"><span [style.width.%]="anchoLag(o.lag, g)" [class.rojo]="o.lag > 0"></span></span>
+                    {{ o.lag }}
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        } @else {
+          <p class="vacio">Cargando…</p>
+        }
+      </div>
+    }
+  }
+</div>

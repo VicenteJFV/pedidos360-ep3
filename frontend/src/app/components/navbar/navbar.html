@@ -13,6 +13,10 @@
     <li *ngIf="authService.getRole() === 'Admin'">
       <a routerLink="/admin">Panel Admin</a>
     </li>
+
+    <li *ngIf="authService.getRole() === 'Admin'">
+      <a routerLink="/kafka">Kafka</a>
+    </li>
     
 
     <li *ngIf="!authService.isLoggedIn()">
